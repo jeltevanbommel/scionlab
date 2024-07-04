@@ -30,7 +30,6 @@ import (
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/daemon"
-	"github.com/scionproto/scion/pkg/experimental/fabrid"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/snet"
 	snetpath "github.com/scionproto/scion/pkg/snet/path"
@@ -316,12 +315,12 @@ func (cs ColorScheme) KeyValues(kv ...string) []string {
 	}
 	return entries
 }
-func (cs ColorScheme) Policies(policies [][]*fabrid.Policy, idx int) string {
+func (cs ColorScheme) Policies(policies []snet.FabridInfo, idx int) string {
 	if len(policies) < idx {
 		return ""
 	}
-	policyStr := make([]string, len(policies[idx]))
-	for i, v := range policies[idx] {
+	policyStr := make([]string, len(policies[idx].Policies))
+	for i, v := range policies[idx].Policies {
 		if v.IsLocal {
 			policyStr[i] = cs.LocalPolicy.Sprintf(v.String())
 		} else {
@@ -337,7 +336,7 @@ func (cs ColorScheme) Path(path snet.Path) string {
 		return ""
 	}
 	intfs := path.Metadata().Interfaces
-	policies := path.Metadata().FabridPolicies
+	policies := path.Metadata().FabridInfo
 	if len(intfs) == 0 {
 		return ""
 	}

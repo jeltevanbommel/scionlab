@@ -205,7 +205,8 @@ func (s *DefaultExtender) Extend(
 			SupportedIndicesMap: s.Fabrid.SupportedIndicesMap,
 			IndexIdentiferMap:   s.Fabrid.IndexIdentifierMap,
 		}
-		asEntry.UnsignedExtensions.FabridDetached = f
+		//TODO(jvanbommel): uncomment
+		//asEntry.UnsignedExtensions.FabridDetached = f
 
 		d := digest.Digest{Digest: f.Hash()}
 		if s.EPIC {

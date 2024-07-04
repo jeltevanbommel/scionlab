@@ -81,11 +81,11 @@ func TestFetchRemotePolicy(t *testing.T) {
 				FabridManager: &fabrid.FabridManager{
 					IdentifierDescriptionMap: tc.IdentifierDescriptions,
 				},
-				Fetcher: &grpc.BasicPolicyFetcher{},
+				Fetcher: &grpc.BasicFabridControlPlaneFetcher{},
 			})
 			server.Start(t)
 
-			fetcher := grpc.BasicPolicyFetcher{
+			fetcher := grpc.BasicFabridControlPlaneFetcher{
 				Dialer:     server,
 				Router:     router,
 				MaxRetries: 1,
