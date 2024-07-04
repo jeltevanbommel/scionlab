@@ -95,7 +95,7 @@ func TestRemotePolicyDescription(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			fetcher := mock_grpc.NewMockPolicyFetcher(ctrl)
+			fetcher := mock_grpc.NewMockFabridControlPlaneFetcher(ctrl)
 			fetcher.EXPECT().GetRemotePolicy(gomock.Any(), ia,
 				tc.PolicyIdentifier).Times(tc.ExpectedFetcherCalls).DoAndReturn(
 				func(ctx context.Context,

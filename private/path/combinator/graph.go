@@ -382,7 +382,8 @@ func (solution *pathSolution) Path() Path {
 			epicSegAuths = append(epicSegAuths, epicAuth)
 
 			fabridMap, exists := fabridMaps[asEntry.Local]
-			if !exists || fabridMap.Ts.Before(solEdge.segment.Info.Timestamp) {
+			if !exists || fabridMap.Ts.Before(solEdge.segment.Info.Timestamp) && asEntry.
+				Extensions.Digests != nil {
 				fabridMaps[asEntry.Local] = FabridMapEntry{
 					Map:    asEntry.UnsignedExtensions.FabridDetached,
 					Digest: asEntry.Extensions.Digests.Fabrid.Digest,

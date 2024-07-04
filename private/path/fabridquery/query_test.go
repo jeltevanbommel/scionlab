@@ -45,8 +45,6 @@ func (p PathProvider) GetHops(src, dst addr.IA) [][]snet.HopInterface {
 	paths := p.g.GetPaths(src.String(), dst.String())
 	for _, ifids := range paths {
 		pathIntfs := make([]snet.PathInterface, 0, len(ifids))
-		fabridEnabled := make([]bool, 0, len(ifids)/2+1)
-		fabridPols := make([][]*fabrid.Policy, 0, len(ifids)/2+1)
 		for _, ifid := range ifids {
 			ia := p.g.GetParent(ifid)
 			pathIntfs = append(pathIntfs, snet.PathInterface{
@@ -54,21 +52,35 @@ func (p PathProvider) GetHops(src, dst addr.IA) [][]snet.HopInterface {
 				ID: common.IFIDType(ifid),
 			})
 		}
-
-		fabridEnabled = append(fabridEnabled, true)
-		fabridPols = append(fabridPols, []*fabrid.Policy{})
+		fabridInfo := make([]snet.FabridInfo, 0, len(pathIntfs)/2)
+		fabridInfo = append(fabridInfo, snet.FabridInfo{
+			Enabled:  true,
+			Detached: false,
+			Digest: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12,
+				0x13, 0x14, 0x15, 0x16},
+			Policies: []*fabrid.Policy{},
+		})
 		for i := 1; i < len(pathIntfs)-1; i += 2 {
-			fabridEnabled = append(fabridEnabled, true)
-			fabridPols = append(fabridPols, p.g.FabridPolicy(uint16(pathIntfs[i].ID),
-				uint16(pathIntfs[i+1].ID)))
+			fabridInfo = append(fabridInfo, snet.FabridInfo{
+				Enabled:  true,
+				Detached: false,
+				Digest: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12,
+					0x13, 0x14, 0x15, 0x16},
+				Policies: p.g.FabridPolicy(uint16(pathIntfs[i].ID),
+					uint16(pathIntfs[i+1].ID)),
+			})
 		}
-		fabridEnabled = append(fabridEnabled, true)
-		fabridPols = append(fabridPols, p.g.FabridPolicy(uint16(pathIntfs[len(
-			pathIntfs)-1].ID), 0))
+		fabridInfo = append(fabridInfo, snet.FabridInfo{
+			Enabled:  true,
+			Detached: false,
+			Digest: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12,
+				0x13, 0x14, 0x15, 0x16},
+			Policies: p.g.FabridPolicy(uint16(pathIntfs[len(
+				pathIntfs)-1].ID), 0),
+		})
 		metadata := snet.PathMetadata{
-			Interfaces:     pathIntfs,
-			FabridEnabled:  fabridEnabled,
-			FabridPolicies: fabridPols,
+			Interfaces: pathIntfs,
+			FabridInfo: fabridInfo,
 		}
 		result = append(result, metadata.Hops())
 	}

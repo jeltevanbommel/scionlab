@@ -108,45 +108,10 @@ func (s *DaemonServer) paths(ctx context.Context,
 		return nil, err
 	}
 	if req.FetchFabridDetachedMaps || true {
-		conn, err := s.Dialer.Dial(ctx, &snet.SVCAddr{SVC: addr.SvcCS})
-		if err != nil {
-			log.FromCtx(ctx).Debug("Dialing CS failed", "err", err)
-		}
-		defer conn.Close()
-		client := experimental.NewFABRIDIntraServiceClient(conn)
-		fabridMaps := make(map[addr.IA]combinator.FabridMapEntry)
-		for _, p := range paths {
-			ifaces := p.Metadata().Interfaces
-			if p.Metadata().FabridInfo[0].Detached {
-				if _, ok := fabridMaps[ifaces[0].IA]; !ok {
-					fabridMaps[ifaces[0].IA] = fetchMaps(ctx, ifaces[0].IA, client,
-						p.Metadata().FabridInfo[0].Digest)
-				}
-				p.Metadata().FabridInfo[0] = *combinator.GetFabridInfoForIntfs(ifaces[0].IA, 0,
-					uint16(ifaces[0].ID), fabridMaps, false)
-			}
-			for i := 1; i < len(ifaces)-1; i += 2 {
-				if p.Metadata().FabridInfo[(i+1)/2].Detached {
-					if _, ok := fabridMaps[ifaces[i].IA]; !ok {
-						fabridMaps[ifaces[i].IA] = fetchMaps(ctx, ifaces[i].IA, client,
-							p.Metadata().FabridInfo[(i+1)/2].Digest)
-					}
-					p.Metadata().FabridInfo[(i+1)/2] = *combinator.GetFabridInfoForIntfs(
-						ifaces[i].IA, uint16(ifaces[i].ID), uint16(ifaces[i+1].ID), fabridMaps,
-						false)
-				}
-			}
-			if p.Metadata().FabridInfo[len(ifaces)/2].Detached {
-				if _, ok := fabridMaps[ifaces[len(ifaces)-1].IA]; !ok {
-					fabridMaps[ifaces[len(ifaces)-1].IA] = fetchMaps(ctx,
-						ifaces[len(ifaces)-1].IA, client, p.Metadata().FabridInfo[len(
-							ifaces)/2].Digest)
-				}
-				p.Metadata().FabridInfo[len(ifaces)/2] = *combinator.GetFabridInfoForIntfs(
-					ifaces[len(ifaces)-1].IA, uint16(ifaces[len(ifaces)-1].ID), 0, fabridMaps,
-					true)
-			}
-
+		detachedHops := findDetachedHops(paths)
+		if len(detachedHops) > 0 {
+			log.Info("Detached hops found", "hops", len(detachedHops))
+			updateFabridInfo(ctx, s.Dialer, detachedHops)
 		}
 	}
 	reply := &sdpb.PathsResponse{}
@@ -154,6 +119,67 @@ func (s *DaemonServer) paths(ctx context.Context,
 		reply.Paths = append(reply.Paths, pathToPB(p))
 	}
 	return reply, nil
+}
+
+type tempHopInfo struct {
+	IA      addr.IA
+	Meta    *snet.PathMetadata
+	fiIdx   int
+	Ingress uint16
+	Egress  uint16
+}
+
+func updateFabridInfo(ctx context.Context, dialer libgrpc.Dialer, detachedHops []tempHopInfo) {
+	conn, err := dialer.Dial(ctx, &snet.SVCAddr{SVC: addr.SvcCS})
+	if err != nil {
+		log.FromCtx(ctx).Debug("Dialing CS failed", "err", err)
+	}
+	defer conn.Close()
+	client := experimental.NewFABRIDIntraServiceClient(conn)
+	fabridMaps := make(map[addr.IA]combinator.FabridMapEntry)
+	for _, detachedHop := range detachedHops {
+		if _, ok := fabridMaps[detachedHop.IA]; !ok {
+			fabridMaps[detachedHop.IA] = fetchMaps(ctx, detachedHop.IA, client,
+				detachedHop.Meta.FabridInfo[detachedHop.fiIdx].Digest)
+		}
+		detachedHop.Meta.FabridInfo[detachedHop.fiIdx] = *combinator.
+			GetFabridInfoForIntfs(detachedHop.IA, detachedHop.Ingress, detachedHop.Egress,
+				fabridMaps, false)
+	}
+}
+
+func findDetachedHops(paths []snet.Path) []tempHopInfo {
+	detachedHops := make([]tempHopInfo, 0)
+	for _, p := range paths {
+		if p.Metadata().FabridInfo[0].Detached {
+			detachedHops = append(detachedHops, tempHopInfo{
+				IA:      p.Metadata().Interfaces[0].IA,
+				Meta:    p.Metadata(),
+				fiIdx:   0,
+				Ingress: 0,
+				Egress:  uint16(p.Metadata().Interfaces[0].ID),
+			})
+		}
+		for i := 1; i < len(p.Metadata().Interfaces)-1; i += 2 {
+			detachedHops = append(detachedHops, tempHopInfo{
+				IA:      p.Metadata().Interfaces[i].IA,
+				Meta:    p.Metadata(),
+				fiIdx:   (i + 1) / 2,
+				Ingress: uint16(p.Metadata().Interfaces[i].ID),
+				Egress:  uint16(p.Metadata().Interfaces[i+1].ID),
+			})
+		}
+		if p.Metadata().FabridInfo[len(p.Metadata().Interfaces)/2].Detached {
+			detachedHops = append(detachedHops, tempHopInfo{
+				IA:      p.Metadata().Interfaces[len(p.Metadata().Interfaces)-1].IA,
+				Meta:    p.Metadata(),
+				fiIdx:   len(p.Metadata().Interfaces) / 2,
+				Ingress: uint16(p.Metadata().Interfaces[len(p.Metadata().Interfaces)-1].ID),
+				Egress:  0,
+			})
+		}
+	}
+	return detachedHops
 }
 
 func fetchMaps(ctx context.Context, ia addr.IA, client experimental.FABRIDIntraServiceClient,
