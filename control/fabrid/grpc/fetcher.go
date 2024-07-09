@@ -115,7 +115,8 @@ func (f *BasicFabridControlPlaneFetcher) GetRemotePolicy(
 				"remote policy fetch fetch failed, invalid response", "try", i+1,
 				"peer", remoteIA)
 		}
-		return &experimental.RemotePolicyDescriptionResponse{Description: policyDescr.Description}, nil
+		return &experimental.RemotePolicyDescriptionResponse{Description: policyDescr.
+			Description}, nil
 	}
 	return &experimental.RemotePolicyDescriptionResponse{}, serrors.WrapStr(
 		"reached max retry attempts fetching remote policy",
@@ -155,7 +156,8 @@ func (f *BasicFabridControlPlaneFetcher) attemptFetchRemote(
 	return rep, nil
 }
 
-func (f *BasicFabridControlPlaneFetcher) pathToDst(ctx context.Context, dst addr.IA) (snet.Path, error) {
+func (f *BasicFabridControlPlaneFetcher) pathToDst(ctx context.Context, dst addr.IA) (snet.Path,
+	error) {
 	paths, err := f.Router.AllRoutes(ctx, dst)
 	if err != nil {
 		return nil, serrors.Wrap(errNotReachable, err)

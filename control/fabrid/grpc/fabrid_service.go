@@ -136,8 +136,10 @@ func (s Server) DetachedMaps(_ context.Context, _ *experimental.DetachedMapsRequ
 	*experimental.DetachedMapsResponse, error) {
 	return &experimental.DetachedMapsResponse{
 		Maps: &experimental.FABRIDDetachableMaps{
-			SupportedIndicesMap: fabridext.SupportedIndicesMapToPB(s.FabridManager.SupportedIndicesMap),
-			IndexIdentifierMap:  fabridext.IndexIdentifierMapToPB(s.FabridManager.IndexIdentifierMap),
+			SupportedIndicesMap: fabridext.SupportedIndicesMapToPB(s.FabridManager.
+				SupportedIndicesMap),
+			IndexIdentifierMap: fabridext.IndexIdentifierMapToPB(s.FabridManager.
+				IndexIdentifierMap),
 		},
 	}, nil
 }

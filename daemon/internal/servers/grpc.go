@@ -107,7 +107,7 @@ func (s *DaemonServer) paths(ctx context.Context,
 			"src", srcIA, "dst", dstIA, "refresh", req.Refresh)
 		return nil, err
 	}
-	if req.FetchFabridDetachedMaps || true {
+	if req.FetchFabridDetachedMaps {
 		detachedHops := findDetachedHops(paths)
 		if len(detachedHops) > 0 {
 			log.Info("Detached hops found", "hops", len(detachedHops))
@@ -129,6 +129,8 @@ type tempHopInfo struct {
 	Egress  uint16
 }
 
+// updateFabridInfo updates the FABRID info that is contained in the path Metadata for detached
+// hops, by fetching the corresponding FABRID maps from the corresponding AS.
 func updateFabridInfo(ctx context.Context, dialer libgrpc.Dialer, detachedHops []tempHopInfo) {
 	conn, err := dialer.Dial(ctx, &snet.SVCAddr{SVC: addr.SvcCS})
 	if err != nil {
@@ -148,6 +150,8 @@ func updateFabridInfo(ctx context.Context, dialer libgrpc.Dialer, detachedHops [
 	}
 }
 
+// findDetachedHops finds the hops where the FABRID maps have been detached in a given list of
+// paths.
 func findDetachedHops(paths []snet.Path) []tempHopInfo {
 	detachedHops := make([]tempHopInfo, 0)
 	for _, p := range paths {
@@ -182,6 +186,9 @@ func findDetachedHops(paths []snet.Path) []tempHopInfo {
 	return detachedHops
 }
 
+// fetchMaps retrieves FABRID maps from the Control Service for a given ISD-AS.
+// It uses the provided client to communicate with the Control Service and returns a FabridMapEntry
+// to be used directly in the combinator.
 func fetchMaps(ctx context.Context, ia addr.IA, client experimental.FABRIDIntraServiceClient,
 	digest []byte) combinator.FabridMapEntry {
 	maps, err := client.RemoteMaps(ctx, &experimental.RemoteMapsRequest{

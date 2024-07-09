@@ -111,10 +111,11 @@ func (c grpcConn) Paths(ctx context.Context, dst, src addr.IA,
 
 	client := sdpb.NewDaemonServiceClient(c.conn)
 	response, err := client.Paths(ctx, &sdpb.PathsRequest{
-		SourceIsdAs:      uint64(src),
-		DestinationIsdAs: uint64(dst),
-		Hidden:           f.Hidden,
-		Refresh:          f.Refresh,
+		SourceIsdAs:             uint64(src),
+		DestinationIsdAs:        uint64(dst),
+		Hidden:                  f.Hidden,
+		Refresh:                 f.Refresh,
+		FetchFabridDetachedMaps: f.FetchFabridDetachedMaps,
 	})
 	if err != nil {
 		c.metrics.incPaths(err)

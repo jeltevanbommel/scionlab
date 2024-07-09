@@ -80,7 +80,7 @@ func Choose(
 ) (snet.Path, error) {
 
 	o := applyOption(opts)
-	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq)
+	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq, o.fetchDetachedFabridMaps)
 	if err != nil {
 		return nil, serrors.WrapStr("fetching paths", err)
 	}
@@ -208,9 +208,11 @@ func fetchPaths(
 	remote addr.IA,
 	refresh bool,
 	seq string,
+	fetchFabridDetachedMaps bool,
 ) ([]snet.Path, error) {
 
-	allPaths, err := conn.Paths(ctx, remote, 0, daemon.PathReqFlags{Refresh: refresh})
+	allPaths, err := conn.Paths(ctx, remote, 0, daemon.PathReqFlags{Refresh: refresh,
+		FetchFabridDetachedMaps: fetchFabridDetachedMaps})
 	if err != nil {
 		return nil, serrors.WrapStr("retrieving paths", err)
 	}
@@ -379,13 +381,14 @@ type FABRIDQuery struct {
 	FabridConfig snetpath.FabridConfig
 }
 type options struct {
-	interactive bool
-	refresh     bool
-	seq         string
-	colorScheme ColorScheme
-	probeCfg    *ProbeConfig
-	epic        bool
-	fabrid      *FABRIDQuery
+	interactive             bool
+	refresh                 bool
+	seq                     string
+	colorScheme             ColorScheme
+	probeCfg                *ProbeConfig
+	epic                    bool
+	fetchDetachedFabridMaps bool
+	fabrid                  *FABRIDQuery
 }
 
 type Option func(o *options)
@@ -437,5 +440,10 @@ func WithEPIC(epic bool) Option {
 func WithFABRID(f *FABRIDQuery) Option {
 	return func(o *options) {
 		o.fabrid = f
+	}
+}
+func WithFetchDetachedFabridMaps(value bool) Option {
+	return func(o *options) {
+		o.fetchDetachedFabridMaps = value
 	}
 }

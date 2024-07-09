@@ -70,23 +70,24 @@ type PingUpdate struct {
 func newPing(pather CommandPather) *cobra.Command {
 	var envFlags flag.SCIONEnvironment
 	var flags struct {
-		count       uint16
-		features    []string
-		interactive bool
-		interval    time.Duration
-		logLevel    string
-		maxMTU      bool
-		noColor     bool
-		refresh     bool
-		healthyOnly bool
-		sequence    string
-		size        uint
-		pktSize     uint
-		timeout     time.Duration
-		tracer      string
-		epic        bool
-		format      string
-		fabridQuery string
+		count         uint16
+		features      []string
+		interactive   bool
+		interval      time.Duration
+		logLevel      string
+		maxMTU        bool
+		noColor       bool
+		refresh       bool
+		healthyOnly   bool
+		sequence      string
+		size          uint
+		pktSize       uint
+		timeout       time.Duration
+		tracer        string
+		epic          bool
+		format        string
+		fabridQuery   string
+		fetchDetached bool
 	}
 
 	var cmd = &cobra.Command{
@@ -191,6 +192,7 @@ On other errors, ping will exit with code 2.
 					Query:        flags.fabridQuery,
 					FabridConfig: cfg,
 				}))
+				opts = append(opts, path.WithFetchDetachedFabridMaps(flags.fetchDetached))
 			}
 			cs := path.DefaultColorScheme(false)
 			pingPath, err := path.Choose(traceCtx, sd, remote.IA, opts...)
@@ -395,6 +397,9 @@ SCMP echo header and payload are equal to the MTU of the path. This flag overrid
 	cmd.Flags().StringVar(&flags.logLevel, "log.level", "", app.LogLevelUsage)
 	cmd.Flags().StringVar(&flags.tracer, "tracing.agent", "", "Tracing agent address")
 	cmd.Flags().BoolVar(&flags.epic, "epic", false, "Enable EPIC for path probing.")
+	cmd.Flags().BoolVar(&flags.fetchDetached, "fetch-detached", true,
+		"Fetch FABRID maps for hops where they have been detached. "+
+			"This increases the overhead of path finding.")
 	cmd.Flags().StringVar(&flags.format, "format", "human",
 		"Specify the output format (human|json|yaml)")
 	return cmd
