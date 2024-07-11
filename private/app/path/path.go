@@ -321,6 +321,9 @@ func (cs ColorScheme) Policies(policies []snet.FabridInfo, idx int) string {
 	if len(policies) < idx {
 		return ""
 	}
+	if policies[idx].Enabled && len(policies[idx].Policies) == 0 {
+		return cs.GlobalPolicy.Sprintf("~ZERO~")
+	}
 	policyStr := make([]string, len(policies[idx].Policies))
 	for i, v := range policies[idx].Policies {
 		if v.IsLocal {

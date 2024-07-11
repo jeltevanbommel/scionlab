@@ -155,7 +155,7 @@ func updateFabridInfo(ctx context.Context, dialer libgrpc.Dialer, detachedHops [
 func findDetachedHops(paths []snet.Path) []tempHopInfo {
 	detachedHops := make([]tempHopInfo, 0)
 	for _, p := range paths {
-		if p.Metadata().FabridInfo[0].Detached {
+		if p.Metadata().FabridInfo[0].Enabled && p.Metadata().FabridInfo[0].Detached {
 			detachedHops = append(detachedHops, tempHopInfo{
 				IA:      p.Metadata().Interfaces[0].IA,
 				Meta:    p.Metadata(),
@@ -165,15 +165,19 @@ func findDetachedHops(paths []snet.Path) []tempHopInfo {
 			})
 		}
 		for i := 1; i < len(p.Metadata().Interfaces)-1; i += 2 {
-			detachedHops = append(detachedHops, tempHopInfo{
-				IA:      p.Metadata().Interfaces[i].IA,
-				Meta:    p.Metadata(),
-				fiIdx:   (i + 1) / 2,
-				Ingress: uint16(p.Metadata().Interfaces[i].ID),
-				Egress:  uint16(p.Metadata().Interfaces[i+1].ID),
-			})
+			if p.Metadata().FabridInfo[(i+1)/2].Enabled &&
+				p.Metadata().FabridInfo[(i+1)/2].Detached {
+				detachedHops = append(detachedHops, tempHopInfo{
+					IA:      p.Metadata().Interfaces[i].IA,
+					Meta:    p.Metadata(),
+					fiIdx:   (i + 1) / 2,
+					Ingress: uint16(p.Metadata().Interfaces[i].ID),
+					Egress:  uint16(p.Metadata().Interfaces[i+1].ID),
+				})
+			}
 		}
-		if p.Metadata().FabridInfo[len(p.Metadata().Interfaces)/2].Detached {
+		if p.Metadata().FabridInfo[len(p.Metadata().Interfaces)/2].Enabled &&
+			p.Metadata().FabridInfo[len(p.Metadata().Interfaces)/2].Detached {
 			detachedHops = append(detachedHops, tempHopInfo{
 				IA:      p.Metadata().Interfaces[len(p.Metadata().Interfaces)-1].IA,
 				Meta:    p.Metadata(),
