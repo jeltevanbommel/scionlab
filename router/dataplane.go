@@ -29,17 +29,20 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/sys/unix"
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/drkey"
 	libepic "github.com/scionproto/scion/pkg/experimental/epic"
 	"github.com/scionproto/scion/pkg/experimental/fabrid/crypto"
 	"github.com/scionproto/scion/pkg/log"
+	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/processmetrics"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/private/util"
@@ -55,6 +58,8 @@ import (
 	"github.com/scionproto/scion/private/drkey/drkeyutil"
 	"github.com/scionproto/scion/private/topology"
 	underlayconn "github.com/scionproto/scion/private/underlay/conn"
+	"github.com/scionproto/scion/private/underlay/raw"
+	protocols "github.com/scionproto/scion/private/underlay/raw/protocols"
 	"github.com/scionproto/scion/router/bfd"
 	"github.com/scionproto/scion/router/control"
 )
@@ -73,6 +78,9 @@ const (
 	// e2eAuthHdrLen is the length in bytes of added information when a SCMP packet
 	// needs to be authenticated: 16B (e2e.option.Len()) + 16B (CMAC_tag.Len()).
 	e2eAuthHdrLen = 32
+
+	// The maximumum transferable packet size for the raw interfaces
+	MAX_MTU = 9000
 )
 
 type bfdSession interface {
@@ -121,6 +129,37 @@ type DataPlane struct {
 	// The pool that stores all the packet buffers as described in the design document. See
 	// https://github.com/scionproto/scion/blob/master/doc/dev/design/BorderRouter.rst
 	packetPool chan []byte
+
+	// mplsRib is the routing information base for MPLS packets. The RIB is a mapping from MPLS label to the next hop's
+	// MAC address and the hardware interface name + index that packets for this label should be propagated on.
+	// This can be filled from a config, or determined dynamically using a protocol such as LDP.
+	mplsRib map[uint32]MplsRibEntry
+
+	// rawInterfaces stores the hardware interface indices of the interfaces that can be used for raw connection based
+	// packet transmission.
+	rawInterfaces []int32
+	rawReceivers  map[HwReceiver]raw.Conn
+	rawSenders    map[SwSender]SenderConn
+	udpAddr       net.UDPAddr
+}
+type SenderConn struct {
+	Conn        raw.Conn
+	SendingFunc raw.SendingFunc
+}
+type SwSender struct {
+	swIntfIndex uint16
+	protocol    raw.ProtocolType
+}
+type HwReceiver struct {
+	hwIntfIndex int
+	protocol    raw.ProtocolType
+}
+
+// MplsRib stores a single entry to the routing information base.
+type MplsRibEntry struct {
+	NextHopLL   *unix.RawSockaddrLinklayer
+	HwIntfIndex int32
+	HwIntfName  string
 }
 
 var (
@@ -205,6 +244,28 @@ func (d *DataPlane) SetKey(key []byte) error {
 	return nil
 }
 
+func (d *DataPlane) AddMplsRibEntry(label uint32, nextHopLl *unix.RawSockaddrLinklayer, intf *net.Interface) error {
+	//TODO(jvanbommel): cleanup
+	//ok := false
+	//for _, ifi := range d.rawInterfaces {
+	//	if ifi == int32(intf.Index) {
+	//		ok = true
+	//		break
+	//	}
+	//}
+	//if !ok {
+	//	return serrors.New("MPLS RIB uses invalid/inactive interface", "intf", intf.Name)
+	//}
+	if d.mplsRib == nil {
+		d.mplsRib = make(map[uint32]MplsRibEntry)
+	}
+	d.mplsRib[label] = MplsRibEntry{
+		NextHopLL: nextHopLl,
+		//HwIntfIndex: int32(intf.Index),
+		//HwIntfName:  intf.Name,
+	}
+	return nil
+}
 func (d *DataPlane) SetPortRange(start, end uint16) {
 	d.dispatchedPortStart = start
 	d.dispatchedPortEnd = end
@@ -523,8 +584,8 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 		len(d.interfaces)*cfg.BatchSize/cfg.NumProcessors,
 		cfg.BatchSize)
 
-	d.initPacketPool(cfg, processorQueueSize)
-	procQs, fwQs, slowQs := initQueues(cfg, d.interfaces, processorQueueSize)
+	d.initPacketPool(cfg, processorQueueSize, len(d.rawSenders))
+	procQs, fwQs, slowQs, rawFwQs := initQueues(cfg, d.interfaces, processorQueueSize, d.rawSenders)
 
 	for ifID, conn := range d.interfaces {
 		go func(ifID uint16, conn BatchConn) {
@@ -536,10 +597,22 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 			d.runForwarder(ifID, conn, cfg, fwQs[ifID])
 		}(ifID, conn)
 	}
+	for hwIf, conn := range d.rawReceivers {
+		go func(ifID int32, conn raw.Conn) {
+			defer log.HandlePanic()
+			d.runRawReceiver(ifID, conn, cfg, procQs)
+		}(int32(hwIf.hwIntfIndex), conn)
+	}
+	for swIf, sender := range d.rawSenders {
+		go func(sender SwSender, conn raw.Conn, sendingFn raw.SendingFunc) {
+			defer log.HandlePanic()
+			d.runRawForwarder(sender.swIntfIndex, conn, sendingFn, cfg, rawFwQs[sender])
+		}(swIf, sender.Conn, sender.SendingFunc)
+	}
 	for i := 0; i < cfg.NumProcessors; i++ {
 		go func(i int) {
 			defer log.HandlePanic()
-			d.runProcessor(i, procQs[i], fwQs, slowQs[i%cfg.NumSlowPathProcessors])
+			d.runProcessor(i, procQs[i], fwQs, slowQs[i%cfg.NumSlowPathProcessors], rawFwQs)
 		}(i)
 	}
 	for i := 0; i < cfg.NumSlowPathProcessors; i++ {
@@ -565,10 +638,11 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 
 // initializePacketPool calculates the size of the packet pool based on the
 // current dataplane settings and allocates all the buffers
-func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int) {
-	poolSize := len(d.interfaces)*cfg.BatchSize +
+func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int, activeRawInterfaces int) {
+	poolSize := len(d.interfaces)*3*cfg.BatchSize +
 		(cfg.NumProcessors+cfg.NumSlowPathProcessors)*(processorQueueSize+1) +
-		len(d.interfaces)*(2*cfg.BatchSize)
+		activeRawInterfaces*cfg.BatchSize
+	// TODO(jvanbommel): why was the original 3?
 
 	log.Debug("Initialize packet pool of size", "poolSize", poolSize)
 	d.packetPool = make(chan []byte, poolSize)
@@ -579,8 +653,8 @@ func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int) {
 
 // initializes the processing routines and forwarders queues
 func initQueues(cfg *RunConfig, interfaces map[uint16]BatchConn,
-	processorQueueSize int) ([]chan packet, map[uint16]chan packet,
-	[]chan slowPacket) {
+	processorQueueSize int, rawSenders map[SwSender]SenderConn) ([]chan packet, map[uint16]chan packet,
+	[]chan slowPacket, map[SwSender]chan packet) {
 
 	procQs := make([]chan packet, cfg.NumProcessors)
 	for i := 0; i < cfg.NumProcessors; i++ {
@@ -594,7 +668,12 @@ func initQueues(cfg *RunConfig, interfaces map[uint16]BatchConn,
 	for ifID := range interfaces {
 		fwQs[ifID] = make(chan packet, cfg.BatchSize)
 	}
-	return procQs, fwQs, slowQs
+	rawFwQs := make(map[SwSender]chan packet)
+	for sender, _ := range rawSenders {
+		log.Debug("Creating queue for ", "sender", sender.protocol, "s", sender.swIntfIndex)
+		rawFwQs[sender] = make(chan packet, cfg.BatchSize)
+	}
+	return procQs, fwQs, slowQs, rawFwQs
 }
 
 type packet struct {
@@ -611,7 +690,18 @@ type packet struct {
 	trafficType trafficType
 	// The goods
 	rawPacket []byte
-	mplsLabel uint8
+
+	// validatedSource indicates whether the packet has been received on a hardware interface, rather
+	// than the traditional IP/UDP connections and thus does not need manual verification of the
+	// source sender.
+	validatedSource bool
+	// When using a raw socket to receive packets the raw packet data will contain protocol
+	// headers, the offset defines where the SCION packet header starts.
+	offset uint
+	// rawForwardingArgs stores the specific arguments that are used to forward the packet on a
+	// hardware interface. This contains protocol specific arguments, such as an MPLS label,
+	//as well as the destination MAC address.
+	rawForwardingArgs raw.ForwardingArgs
 }
 
 type slowPacket struct {
@@ -619,6 +709,81 @@ type slowPacket struct {
 	slowPathRequest slowPathRequest
 }
 
+func (d *DataPlane) runRawReceiver(hwIfID int32, conn raw.Conn, cfg *RunConfig,
+	procQs []chan packet) {
+	log.Debug("Run raw receiver for", "interface", hwIfID, "protocol", conn.Protocol().Name())
+	randomValue := make([]byte, 16)
+	if _, err := rand.Read(randomValue); err != nil {
+		panic("Error while generating random value")
+	}
+
+	_, _, iovs, hs := raw.MakeReadMessages(cfg.BatchSize, MAX_MTU)
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		panic("Cannot obtain a lock on the raw interface")
+	}
+
+	numReusable := 0 // unused buffers from previous loop
+
+	// Each receiver (therefore each input interface) has a unique random seed for the procID hash
+	// function.
+	hashSeed := fnv1aOffset32
+	randomBytes := make([]byte, 4)
+	if _, err := rand.Read(randomBytes); err != nil {
+		panic("Error while generating random value")
+	}
+	for _, c := range randomBytes {
+		hashSeed = hashFNV1a(hashSeed, c)
+	}
+
+	for d.running {
+		// collect packets
+		for i := 0; i < cfg.BatchSize-numReusable; i++ {
+			p := <-d.packetPool
+			iovs[i].Base = &p[0]
+			iovs[i].SetLen(len(p))
+		}
+		// read batch
+		numPkts, err := conn.ReadBatch(hs)
+		numReusable = len(hs) - numPkts
+		if err != nil {
+			log.Debug("Error while reading batch", "HW Interface ID", hwIfID, "err", err)
+			continue
+		}
+
+		for _, pkt := range hs[:numPkts] {
+			rawPkt := unsafe.Slice(pkt.Hdr.Iov.Base, pkt.Hdr.Iov.Len)[:pkt.Len]
+			offset, srcAddr, err := conn.Protocol().ParsePacket(rawPkt)
+			if err != nil {
+				log.Debug("Error while parsing packet", "HW Interface ID", hwIfID, "err",
+					err)
+				continue
+			}
+			outPkt := packet{
+				rawPacket:       rawPkt,
+				ingress:         0,
+				validatedSource: !conn.Protocol().RequiresUDPSourceValidation(),
+				offset:          offset,
+				srcAddr:         srcAddr,
+			}
+			log.Debug("Incoming pkt", "data", rawPkt)
+
+			procID, err := computeProcID(rawPkt[offset:], cfg.NumProcessors, hashSeed)
+			if err != nil {
+				log.Debug("Error while computing procID", "err", err)
+				d.returnPacketToPool(outPkt.rawPacket)
+				return
+			}
+			select {
+			case procQs[procID] <- outPkt:
+			default:
+				d.returnPacketToPool(outPkt.rawPacket)
+			}
+
+		}
+
+	}
+}
 func (d *DataPlane) runReceiver(ifID uint16, conn BatchConn, cfg *RunConfig,
 	procQs []chan packet) {
 
@@ -718,8 +883,7 @@ func (d *DataPlane) returnPacketToPool(pkt []byte) {
 	d.packetPool <- pkt[:cap(pkt)]
 }
 
-func (d *DataPlane) runProcessor(id int, q <-chan packet,
-	fwQs map[uint16]chan packet, slowQ chan<- slowPacket) {
+func (d *DataPlane) runProcessor(id int, q <-chan packet, fwQs map[uint16]chan packet, slowQ chan<- slowPacket, rawFwQs map[SwSender]chan packet) {
 
 	log.Debug("Initialize processor with", "id", id)
 	processor := newPacketProcessor(d)
@@ -728,7 +892,13 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet,
 		if !ok {
 			continue
 		}
-		result, err := processor.processPkt(p.rawPacket, p.srcAddr, p.ingress)
+		var result processResult
+		var err error
+		if p.validatedSource {
+			result, err = processor.processPkt(p.rawPacket[p.offset:], p.srcAddr, p.ingress, true)
+		} else {
+			result, err = processor.processPkt(p.rawPacket, p.srcAddr, p.ingress, false)
+		}
 
 		sc := classOfSize(len(p.rawPacket))
 		metrics := d.forwardingMetrics[p.ingress][sc]
@@ -755,16 +925,35 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet,
 			d.returnPacketToPool(p.rawPacket)
 			continue
 		}
-		fwCh, ok := fwQs[egress]
+
+		var fwCh chan packet
+		if result.Protocol != raw.NONE {
+			log.Debug("Forwarding using raw socket", "egress", egress, "protocol", result.Protocol)
+			//TODO(jvanbommel): how handle outAddr for non-fabrid?
+			fwCh, ok = rawFwQs[SwSender{
+				swIntfIndex: result.RawSwIfIdx,
+				protocol:    result.Protocol,
+			}]
+			// e.g. but not nice.
+			fwArgs, ok := result.RawFwArgs.ProtocolArgs.(protocols.MPLSIPv4UDPForwardingArguments)
+			if result.Protocol == raw.MPLS_IP_UDP && ok {
+				fwArgs.DestinationAddress = result.OutAddr
+				result.RawFwArgs.ProtocolArgs = fwArgs
+			}
+		} else {
+			fwCh, ok = fwQs[egress]
+		}
+
 		if !ok {
-			log.Debug("Error determining forwarder. Egress is invalid", "egress", egress)
+			log.Debug("Error determining forwarder. Egress is invalid", "egress", egress, "rawIfIdx", result.RawSwIfIdx)
 			metrics.DroppedPacketsInvalid.Inc()
 			d.returnPacketToPool(p.rawPacket)
 			continue
 		}
 		p.rawPacket = result.OutPkt
 		p.dstAddr = result.OutAddr
-		p.mplsLabel = uint8(processor.mplsLabel)
+
+		p.rawForwardingArgs = result.RawFwArgs
 
 		p.trafficType = result.TrafficType
 		select {
@@ -873,6 +1062,9 @@ type processResult struct {
 	OutPkt          []byte
 	SlowPathRequest slowPathRequest
 	TrafficType     trafficType
+	RawFwArgs       raw.ForwardingArgs
+	Protocol        raw.ProtocolType
+	RawSwIfIdx      uint16 // intf index is always higher than zero. if == 0 it will be regular queue.
 }
 
 func (p *slowPathPacketProcessor) processPacket(pkt slowPacket) (processResult, error) {
@@ -956,6 +1148,62 @@ func updateOutputMetrics(metrics interfaceMetrics, packets []packet) {
 	}
 }
 
+func (d *DataPlane) runRawForwarder(ifID uint16, conn raw.Conn, fn raw.SendingFunc, cfg *RunConfig, c <-chan packet) {
+	log.Debug("Initialize Raw forwarder for", "swIf", ifID, "protocol", conn.Protocol().Name(),
+		"batch", cfg.BatchSize)
+
+	// We use this somewhat like a ring buffer.
+	pkts := make([]packet, cfg.BatchSize)
+
+	// We use this as a temporary buffer, but allocate it just once
+	// to save on garbage handling.
+	msgs, iovecs := raw.MakeSendMessages(cfg.BatchSize)
+	hdrs := conn.Protocol().AllocateSenderBufs(cfg.BatchSize)
+	toWrite := 0
+	for d.running {
+		toWrite += readUpTo(c, toWrite, toWrite == 0, pkts[toWrite:])
+		// Turn the packets into underlay messages that WriteBatch can send.
+		for i, p := range pkts[:toWrite] {
+			hdrLen, err := fn(&p.rawForwardingArgs, hdrs[i], p.rawPacket)
+			if err != nil {
+				log.Error("Failed to serialize header", "err", err, "protocol",
+					conn.Protocol().Name(),
+					"swIfId", ifID)
+				d.returnPacketToPool(p.rawPacket)
+			}
+			iovecs[i*2].Base = &hdrs[i][0]
+			iovecs[i*2].SetLen(hdrLen)
+			iovecs[i*2+1].Base = &p.rawPacket[0]
+			iovecs[i*2+1].SetLen(len(p.rawPacket))
+			msgs[i].Hdr.Name = (*byte)(unsafe.Pointer(p.rawForwardingArgs.NextHopLL))
+		}
+
+		written, _ := conn.WriteBatch(msgs[:toWrite], 0)
+		if written < 0 {
+			// WriteBatch returns -1 on error, we just consider this as
+			// 0 packets written
+			written = 0
+		}
+		for _, p := range pkts[:written] {
+			d.returnPacketToPool(p.rawPacket)
+		}
+		log.Info("written ", "num", written)
+
+		if written != toWrite {
+			// Only one is dropped at this time. We'll retry the rest.
+			d.returnPacketToPool(pkts[written].rawPacket)
+			toWrite -= written + 1
+			// Shift the leftovers to the head of the buffers.
+			for i := 0; i < toWrite; i++ {
+				pkts[i] = pkts[i+written+1]
+			}
+
+		} else {
+			toWrite = 0
+		}
+	}
+}
+
 func (d *DataPlane) runForwarder(ifID uint16, conn BatchConn, cfg *RunConfig, c <-chan packet) {
 
 	log.Debug("Initialize forwarder for", "interface", ifID)
@@ -973,7 +1221,6 @@ func (d *DataPlane) runForwarder(ifID uint16, conn BatchConn, cfg *RunConfig, c 
 	metrics := d.forwardingMetrics[ifID]
 
 	toWrite := 0
-	lastToS := uint8(0)
 	for d.running {
 		toWrite += readUpTo(c, cfg.BatchSize-toWrite, toWrite == 0, pkts[toWrite:])
 
@@ -983,10 +1230,6 @@ func (d *DataPlane) runForwarder(ifID uint16, conn BatchConn, cfg *RunConfig, c 
 			msgs[i].Addr = nil
 			if p.dstAddr != nil {
 				msgs[i].Addr = p.dstAddr
-			}
-			if p.mplsLabel != lastToS {
-				lastToS = p.mplsLabel
-				_ = conn.SetToS(lastToS)
 			}
 		}
 		written, _ := conn.WriteBatch(msgs[:toWrite], 0)
@@ -1078,7 +1321,9 @@ func (p *scionPacketProcessor) reset() error {
 	p.e2eLayer = slayers.EndToEndExtnSkipper{}
 	p.identifier = nil
 	p.fabrid = nil
-	p.mplsLabel = 0
+	p.rawProtocol = raw.NONE
+	p.rawFwArgs = raw.ForwardingArgs{}
+	p.rawIntfIdx = 0
 	p.nextHop = nil
 	return nil
 }
@@ -1130,7 +1375,31 @@ func (p *scionPacketProcessor) processFabrid(egressIF uint16) error {
 		if err != nil {
 			return err
 		}
-		p.mplsLabel = mplsLabel
+		ribEntry, ok := p.d.mplsRib[mplsLabel]
+		if !ok {
+			log.Info("Fabrid packet received for MPLS policy that is not configured in the MPLS RIB!", "label", mplsLabel)
+			return nil
+		}
+		p.rawFwArgs = raw.ForwardingArgs{
+			NextHopLL: ribEntry.NextHopLL,
+			ProtocolArgs: protocols.MPLSIPv4UDPForwardingArguments{
+				Label:              mplsLabel,
+				DestinationAddress: p.d.internalNextHops[egressIF],
+			},
+		}
+		//TODO(jvanbommel): add override egress id here. The scenario would be as follows:
+		// The border router is connected on a sepearate interface to the MPLS routers. In this case
+		// we should use a special egress if ID for the hardware interface connceted to this MPLS
+		// router.
+		// Solve as follows: in BR config we add an ExtraInterfaces parameter that contains a list
+		// of hw interfaces and their corresponding protocols.
+		// We initialize these with listeners and senders.
+		// The MPLS RIB has an optional entry for the hardware interface index. If it is set,
+		// place in the extra interfaces queue.
+		// OR in topology.json,
+		// we make underlay an array and define all interfaces the br can listen on.
+		p.rawProtocol = raw.MPLS_IP_UDP
+		p.rawIntfIdx = egressIF
 	}
 	return nil
 }
@@ -1236,11 +1505,15 @@ func (p *scionPacketProcessor) processHbhOptions(egressIF uint16) error {
 			if err != nil {
 				return err
 			}
+			log.Info("Fabrid HBH detected")
 			if fabrid.HopfieldMetadata[0].FabridEnabled {
+				log.Info("Fabrid HBH enabled")
 				p.fabrid = fabrid
 				if err = p.processFabrid(egressIF); err != nil {
 					return err
 				}
+				log.Info("Fabrid")
+				fabrid.HopfieldMetadata[0].SerializeTo(opt.OptData[currHop*4:])
 				if err = fabrid.HopfieldMetadata[0].SerializeTo(opt.
 					OptData[currHop*4:]); err != nil {
 					return err
@@ -1253,7 +1526,7 @@ func (p *scionPacketProcessor) processHbhOptions(egressIF uint16) error {
 }
 
 func (p *scionPacketProcessor) processPkt(rawPkt []byte,
-	srcAddr *net.UDPAddr, ingressID uint16) (processResult, error) {
+	srcAddr *net.UDPAddr, ingressID uint16, validatedSource bool) (processResult, error) {
 
 	if err := p.reset(); err != nil {
 		return processResult{}, err
@@ -1261,6 +1534,7 @@ func (p *scionPacketProcessor) processPkt(rawPkt []byte,
 	p.rawPkt = rawPkt
 	p.srcAddr = srcAddr
 	p.ingressID = ingressID
+	p.skipSourceCheck = validatedSource
 
 	// parse SCION header and skip extensions;
 	var err error
@@ -1448,10 +1722,14 @@ type scionPacketProcessor struct {
 	identifier        *extension.IdentifierOption
 	fabrid            *extension.FabridOption
 	fabridInputBuffer []byte
-	mplsLabel         uint32
+
+	rawFwArgs   raw.ForwardingArgs
+	rawProtocol raw.ProtocolType
+	rawIntfIdx  uint16
 	// IP of the next hop. Only valid for the inbound or AS transit cases
-	nextHop     *net.UDPAddr
-	transitType transitType
+	nextHop         *net.UDPAddr
+	transitType     transitType
+	skipSourceCheck bool
 }
 
 type transitType int
@@ -1654,6 +1932,9 @@ func (p *scionPacketProcessor) invalidDstIA() (processResult, error) {
 // this check prevents malicious end hosts in the local AS from bypassing the
 // SrcIA checks by disguising packets as transit traffic.
 func (p *scionPacketProcessor) validateTransitUnderlaySrc() (processResult, error) {
+	if p.skipSourceCheck {
+		return processResult{}, nil
+	}
 	if p.path.IsFirstHop() || p.ingressID != 0 {
 		// not a transit packet, nothing to check
 		return processResult{}, nil
@@ -1661,7 +1942,6 @@ func (p *scionPacketProcessor) validateTransitUnderlaySrc() (processResult, erro
 	pktIngressID := p.ingressInterface()
 	expectedSrc, ok := p.d.internalNextHops[pktIngressID]
 	if !ok || !expectedSrc.IP.Equal(p.srcAddr.IP) {
-		// Drop
 		return processResult{}, invalidSrcAddrForTransit
 	}
 	return processResult{}, nil
@@ -2047,7 +2327,9 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err := p.processHbhOptions(0); err != nil {
 			return processResult{}, err
 		}
-		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttIn}, nil
+		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttIn,
+			RawFwArgs: p.rawFwArgs, RawSwIfIdx: p.rawIntfIdx, Protocol: p.rawProtocol}, nil
+		// EgressID: 0}, nil
 	}
 
 	// Outbound: pkt leaving the local IA. This Could be:
@@ -2105,7 +2387,9 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 			// Therefore it is BRTransit
 			tt = ttBrTransit
 		}
-		return processResult{EgressID: egressID, OutPkt: p.rawPkt, TrafficType: tt}, nil
+		return processResult{EgressID: egressID, OutPkt: p.rawPkt, TrafficType: tt,
+				RawFwArgs: p.rawFwArgs, RawSwIfIdx: p.rawIntfIdx, Protocol: p.rawProtocol},
+			nil
 	}
 	// ASTransit in: pkt leaving this AS through another BR.
 	if a, ok := p.d.internalNextHops[egressID]; ok {
@@ -2114,7 +2398,8 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err := p.processHbhOptions(egressID); err != nil {
 			return processResult{}, err
 		}
-		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttInTransit}, nil
+		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttInTransit, RawFwArgs: p.
+			rawFwArgs, RawSwIfIdx: p.rawIntfIdx, Protocol: p.rawProtocol}, nil
 	}
 	errCode := slayers.SCMPCodeUnknownHopFieldEgress
 	if !p.infoField.ConsDir {
@@ -2812,6 +3097,10 @@ func (d *DataPlane) initMetrics() {
 			continue
 		}
 		d.forwardingMetrics[id] = newInterfaceMetrics(d.Metrics, id, d.localIA, d.neighborIAs)
+
+	}
+	for _, hwIfId := range d.rawInterfaces {
+		d.forwardingMetrics[uint16(hwIfId)] = newInterfaceMetrics(d.Metrics, uint16(hwIfId), d.localIA, d.neighborIAs)
 	}
 
 	// Start our custom /proc/pid/stat collector to export iowait time and (in the future) other
@@ -2822,4 +3111,125 @@ func (d *DataPlane) initMetrics() {
 	if err != nil {
 		log.Error("Could not initialize processmetrics", "err", err)
 	}
+}
+
+// TODO(jvanbommel): MTU's should be respected.
+func (d *DataPlane) AddRawExternalInterface(swIfId common.IFIDType, hwIfId int,
+	protocol raw.ProtocolType, info control.LinkInfo) error {
+
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.running {
+		return modifyExisting
+	}
+
+	if d.rawReceivers == nil {
+		d.rawReceivers = make(map[HwReceiver]raw.Conn)
+	}
+	// Add a listener on the raw socket for the specified protocol if one does not yet exist.
+	receiver := HwReceiver{hwIntfIndex: hwIfId, protocol: protocol}
+	if _, exists := d.rawReceivers[receiver]; !exists {
+		proto := &protocols.MPLSIPUDP{}
+		conn, err := raw.New(hwIfId, proto)
+		if err != nil {
+			return serrors.WrapStr("Raw interface failed to start", err, "hwIfID", hwIfId)
+		}
+		d.rawReceivers[receiver] = conn
+	}
+
+	// Register the information of this link to the listener, such that the listener can identify
+	// the software/SCION interface that incoming packets belong to.
+	err := d.rawReceivers[receiver].Protocol().Register(
+		uint16(swIfId), raw.LinkInfo{
+			Local:  raw.LinkEnd{IA: info.Local.IA, Addr: info.Local.Addr, IFID: info.Local.IFID},
+			Remote: raw.LinkEnd{IA: info.Remote.IA, Addr: info.Remote.Addr, IFID: info.Remote.IFID},
+			LinkTo: info.LinkTo,
+			MTU:    info.MTU,
+		})
+	if err != nil {
+		return serrors.WrapStr("Failed to register link information for raw hw", err, "hwIfID",
+			hwIfId)
+	}
+
+	// Create a prebaked sending function for the connection. By default, add IP link information.
+	prebakeArgs := d.rawReceivers[receiver].Protocol().
+		NewPrebakeArgs(map[string]interface{}{
+			"srcIPAddr": *info.Local.Addr,
+			"dstIPAddr": *info.Remote.Addr},
+		)
+	prebaked := d.rawReceivers[receiver].Protocol().Prebake(prebakeArgs)
+
+	// Store the prebaked sending function so that it can be used in the forwarder.
+	if d.rawSenders == nil {
+		d.rawSenders = make(map[SwSender]SenderConn)
+	}
+	log.Debug("creating", "swifId", swIfId, "protocol", protocol)
+	sender := SwSender{uint16(swIfId), protocol}
+	if _, exists := d.rawSenders[sender]; exists {
+		return serrors.New("Raw interface already exists", "hwIfID", hwIfId,
+			"swIf", swIfId, "protocol", protocol)
+	}
+	d.rawSenders[sender] = struct {
+		Conn        raw.Conn
+		SendingFunc raw.SendingFunc
+	}{d.rawReceivers[receiver], prebaked}
+	log.Info("here")
+	return nil
+}
+
+func (d *DataPlane) AddRawInternalInterface(hwIfId int, protocol raw.ProtocolType,
+	ia addr.IA, localAddr netip.AddrPort) error {
+
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.running {
+		return modifyExisting
+	}
+
+	if d.rawReceivers == nil {
+		d.rawReceivers = make(map[HwReceiver]raw.Conn)
+	}
+	// Add a listener on the raw socket for the specified protocol if one does not yet exist.
+	receiver := HwReceiver{hwIntfIndex: hwIfId, protocol: protocol}
+	if _, exists := d.rawReceivers[receiver]; !exists {
+		proto := &protocols.MPLSIPUDP{}
+		conn, err := raw.New(hwIfId, proto)
+		if err != nil {
+			return serrors.WrapStr("Raw interface failed to start", err, "hwIfID", hwIfId)
+		}
+		d.rawReceivers[receiver] = conn
+	}
+
+	// Register the information of this link to the listener, such that the listener can identify
+	// the software/SCION interface that incoming packets belong to.
+	err := d.rawReceivers[receiver].Protocol().Register(0, raw.LinkInfo{
+		Local: raw.LinkEnd{IA: ia, Addr: net.UDPAddrFromAddrPort(localAddr), IFID: 0},
+	})
+	if err != nil {
+		return serrors.WrapStr("Failed to register link information for raw hw", err, "hwIfID",
+			hwIfId)
+	}
+
+	// Create a prebaked sending function for the connection. By default, add IP link information.
+	prebakeArgs := d.rawReceivers[receiver].Protocol().
+		NewPrebakeArgs(map[string]interface{}{
+			"srcIPAddr": *net.UDPAddrFromAddrPort(localAddr)},
+		)
+	prebaked := d.rawReceivers[receiver].Protocol().Prebake(prebakeArgs)
+
+	// Store the prebaked sending function so that it can be used in the forwarder.
+	if d.rawSenders == nil {
+		d.rawSenders = make(map[SwSender]SenderConn)
+	}
+	sender := SwSender{0, protocol}
+	if _, exists := d.rawSenders[sender]; exists {
+		return serrors.New("Raw interface already exists", "hwIfID", hwIfId,
+			"swIf", 0, "protocol", protocol)
+	}
+	d.rawSenders[sender] = struct {
+		Conn        raw.Conn
+		SendingFunc raw.SendingFunc
+	}{d.rawReceivers[receiver], prebaked}
+	log.Info("here")
+	return nil
 }

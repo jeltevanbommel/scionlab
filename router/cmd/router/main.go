@@ -171,10 +171,11 @@ func realMain(ctx context.Context) error {
 }
 
 func loadControlConfig() (*control.Config, error) {
-	newConf, err := control.LoadConfig(globalCfg.General.ID, globalCfg.General.ConfigDir)
+	newConf, err := control.LoadConfig(globalCfg.General.ID, globalCfg.General.ConfigDir, globalCfg.Router.UseMPLS)
 	if err != nil {
 		return nil, serrors.WrapStr("loading topology", err)
 	}
+	newConf.RawInterfaces = globalCfg.Router.RawHwInterfaces
 	return newConf, nil
 }
 

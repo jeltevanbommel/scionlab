@@ -20,6 +20,12 @@ import (
 	"net/netip"
 	"sort"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/scionproto/scion/pkg/log"
+	"github.com/scionproto/scion/private/underlay/raw"
+	"github.com/scionproto/scion/router/config"
+
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/scionproto/scion/pkg/addr"
@@ -34,6 +40,11 @@ type Dataplane interface {
 	CreateIACtx(ia addr.IA) error
 	AddInternalInterface(ia addr.IA, local netip.AddrPort) error
 	AddExternalInterface(localIfID common.IFIDType, info LinkInfo, owned bool) error
+	AddRawExternalInterface(swIfId common.IFIDType, hwIfId int, protocol raw.ProtocolType,
+		info LinkInfo) error
+	AddRawInternalInterface(hwIfId int, protocol raw.ProtocolType,
+		ia addr.IA, localAddr netip.AddrPort) error
+	AddMplsRibEntry(label uint32, nextHopLl *unix.RawSockaddrLinklayer, intf *net.Interface) error
 	AddSvc(ia addr.IA, svc addr.SVC, a *net.UDPAddr) error
 	DelSvc(ia addr.IA, svc addr.SVC, a *net.UDPAddr) error
 	SetKey(ia addr.IA, index int, key []byte) error
@@ -133,10 +144,34 @@ func ConfigDataplane(dp Dataplane, cfg *Config) error {
 		}
 	}
 
+	//Configure the MPLS routing information base.
+	if err := confMplsRib(dp, cfg.MplsRibConfig); err != nil {
+		return err
+	}
 	// Add internal interfaces
 	if cfg.BR != nil {
 		if cfg.BR.InternalAddr != (netip.AddrPort{}) {
 			if err := dp.AddInternalInterface(cfg.IA, cfg.BR.InternalAddr); err != nil {
+				return err
+			}
+			//TODO(jvanbommel): this has a limitation that for internal AS border routers we only
+			// support a single hw interface. This should be extensible in the future. Discuss
+			// where, e.g. topology -> br -> internal_underlays:
+			// and then some config like:
+			// as_internal_underlays: [
+			// 	 {"type": "ipv4", "127.0.0.9:31002"},
+			//   {"type": "ipv6", "ff.."},
+			//   {"type": "mplsipv4udp", ... e.g. ip / hwintf / hwintf + mplslabel ... }
+			// ]
+			protocol := raw.MPLS_IP_UDP
+			// Lookup the interface that this connection will be using
+			hwIf, err := raw.GetInterfaceByIP(cfg.BR.InternalAddr.Addr().AsSlice())
+			if err != nil {
+				return serrors.WrapStr("getting interface for IP address", err)
+			}
+			log.Debug("Protocol is using", "interface", 0, "protocol", hwIf, "err", err)
+			if err := dp.AddRawInternalInterface(hwIf.Index, protocol, cfg.IA,
+				cfg.BR.InternalAddr); err != nil {
 				return err
 			}
 		}
@@ -166,6 +201,30 @@ func DeriveHFMacKey(k []byte) []byte {
 	return pbkdf2.Key(k, hfMacSalt, 1000, 16, sha256.New)
 }
 
+func confMplsRib(dp Dataplane, config []config.MplsRibConfigEntry) error {
+	for _, re := range config {
+		intf, err := net.InterfaceByName(re.InterfaceName)
+		if err != nil {
+			return serrors.WrapStr("raw interface not found", err)
+		}
+		mac, err := net.ParseMAC(re.NextHop)
+		if err != nil {
+			return serrors.WrapStr("parsing MAC address", err)
+		}
+		dstSockAddr := &unix.RawSockaddrLinklayer{
+			Family:   unix.AF_PACKET,
+			Protocol: uint16(0x4788), // MPLS ethertype
+			Ifindex:  int32(intf.Index),
+		}
+		copy(dstSockAddr.Addr[:], mac)
+		log.Debug("Adding MPLS RIB entry", "label", re.Label, "sockAddr", re.NextHop, "intf", intf.Name, "hwaddr", intf.HardwareAddr)
+		err = dp.AddMplsRibEntry(re.Label, dstSockAddr, intf)
+		if err != nil {
+			return serrors.WrapStr("adding MPLS Rib entry", err)
+		}
+	}
+	return nil
+}
 func confExternalInterfaces(dp Dataplane, cfg *Config) error {
 	// Sort out keys/ifids to get deterministic order for unit testing
 	infoMap := cfg.Topo.IFInfoMap()
@@ -214,6 +273,25 @@ func confExternalInterfaces(dp Dataplane, cfg *Config) error {
 		if err := dp.AddExternalInterface(ifid, linkInfo, owned); err != nil {
 			return err
 		}
+
+		// Check if this interface will be connected to using a raw underlay and if so what
+		//protocol.
+		//TODO(jvanbommel): see comment in ConfigDataplane
+		protocol := raw.MPLS_IP_UDP
+
+		// Lookup the interface that this connection will be using
+		hwIf, err := raw.GetInterfaceByIP(linkInfo.Local.Addr.IP)
+		if err != nil {
+			return serrors.WrapStr("getting interface for IP address", err)
+		}
+		log.Debug("Protocol is using", "interface", ifid, "hwIf", hwIf, "protocol", protocol,
+			"err", err, "link",
+			linkInfo)
+		// Register the connection for this protocol on the local interface
+		if err := dp.AddRawExternalInterface(ifid, hwIf.Index, protocol, linkInfo); err != nil {
+			return serrors.WrapStr("registering raw connection", err)
+		}
+
 	}
 	return nil
 }

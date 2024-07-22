@@ -17,6 +17,7 @@ package control
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/scionproto/scion/router/config"
 	"path/filepath"
 
 	"github.com/scionproto/scion/pkg/addr"
@@ -37,10 +38,16 @@ type Config struct {
 	BR *topology.BRInfo
 	// MasterKeys holds the local AS master keys.
 	MasterKeys keyconf.Master
+
+	// MplsRibConfig stores the configured MPLS routing information base.
+	MplsRibConfig []config.MplsRibConfigEntry
+
+	// RawInterfaces contains the interface names for which raw sockets can be set up.
+	RawInterfaces []string
 }
 
 // LoadConfig sets up the configuration, loading it from the supplied config directory.
-func LoadConfig(id, confDir string) (*Config, error) {
+func LoadConfig(id, confDir string, mpls bool) (*Config, error) {
 	conf := &Config{}
 	if err := conf.loadTopo(id, confDir); err != nil {
 		return nil, err
@@ -48,6 +55,12 @@ func LoadConfig(id, confDir string) (*Config, error) {
 	if err := conf.loadMasterKeys(confDir); err != nil {
 		return nil, err
 	}
+	if mpls {
+		if err := conf.loadMplsRib(id, confDir); err != nil {
+			return nil, err
+		}
+	}
+
 	return conf, nil
 }
 
@@ -90,6 +103,20 @@ func (cfg *Config) loadMasterKeys(confDir string) error {
 		return serrors.WrapStr("loading master keys", err)
 	}
 	return nil
+}
+
+func (cfg *Config) loadMplsRib(id string, confDir string) error {
+	mplsRibConfig, err := config.MplsRibConfigFromFile(filepath.Join(confDir, "mpls_rib.yml"))
+	if err != nil {
+		return serrors.WrapStr("loading MPLS routing information base", err)
+	}
+	for _, brRib := range mplsRibConfig.BrRib {
+		if brRib.Id == id {
+			cfg.MplsRibConfig = brRib.Rib
+			return nil
+		}
+	}
+	return serrors.New("No entry in MPLS RIB found for border router. ", "id", id)
 }
 
 // IACtx is the context for the router for a given IA.

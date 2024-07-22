@@ -48,6 +48,8 @@ type RouterConfig struct {
 	NumSlowPathProcessors int      `toml:"num_slow_processors,omitempty"`
 	BatchSize             int      `toml:"batch_size,omitempty"`
 	DRKey                 []string `toml:"drkey,omitempty"`
+	UseMPLS               bool     `toml:"use_mpls,omitempty"`
+	RawHwInterfaces       []string `toml:"raw_hw_interfaces,omitempty"`
 	Fabrid                bool     `toml:"fabrid,omitempty"`
 	BFD                   BFD      `toml:"bfd,omitempty"`
 	// TODO: These two values were introduced to override the port range for

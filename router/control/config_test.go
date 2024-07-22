@@ -38,7 +38,7 @@ func TestLoad(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			c, err := control.LoadConfig("br1-ff00_0_110-2", "testdata")
+			c, err := control.LoadConfig("br1-ff00_0_110-2", "testdata", false)
 			assert.NoError(t, err)
 			assert.NotNil(t, c)
 			expectedTopo := test.ExpectedTopo(t)

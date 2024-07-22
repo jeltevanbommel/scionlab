@@ -19,11 +19,14 @@ import (
 	"net/netip"
 	"sync"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/private/underlay/conn"
+	protocols "github.com/scionproto/scion/private/underlay/raw"
 	"github.com/scionproto/scion/router/config"
 	"github.com/scionproto/scion/router/control"
 )
@@ -44,6 +47,15 @@ type Connector struct {
 	BFD                 config.BFD
 	DispatchedPortStart *int
 	DispatchedPortEnd   *int
+}
+
+func (c *Connector) AddRawInternalInterface(hwIfId int, protocol protocols.ProtocolType,
+	ia addr.IA, localAddr netip.AddrPort) error {
+	return c.DataPlane.AddRawInternalInterface(hwIfId, protocol, ia, localAddr)
+}
+
+func (c *Connector) AddRawExternalInterface(swIfId common.IFIDType, hwIfId int, protocol protocols.ProtocolType, info control.LinkInfo) error {
+	return c.DataPlane.AddRawExternalInterface(swIfId, hwIfId, protocol, info)
 }
 
 var errMultiIA = serrors.New("different IA not allowed")
@@ -79,6 +91,12 @@ func (c *Connector) AddInternalInterface(ia addr.IA, local netip.AddrPort) error
 		Addr: localU,
 	})
 	return c.DataPlane.AddInternalInterface(connection, local.Addr())
+}
+
+func (c *Connector) AddMplsRibEntry(label uint32, nextHopLl *unix.RawSockaddrLinklayer, intf *net.Interface) error {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.DataPlane.AddMplsRibEntry(label, nextHopLl, intf)
 }
 
 // AddExternalInterface adds a link between the local and remote address.
