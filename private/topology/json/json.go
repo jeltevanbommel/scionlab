@@ -95,6 +95,8 @@ type ServerInfo struct {
 type BRInfo struct {
 	InternalAddr string                           `json:"internal_addr"`
 	Interfaces   map[common.IFIDType]*BRInterface `json:"interfaces"`
+	// Alternative underlays internal to the AS, used for raw underlays:
+	AltUnderlays []InternalUnderlay `json:"alt_underlays,omitempty"`
 }
 
 // GatewayInfo contains SCION gateway information.
@@ -108,20 +110,12 @@ type GatewayInfo struct {
 // BRInterface contains the information for an data-plane BR socket that is external (i.e., facing
 // the neighboring AS).
 type BRInterface struct {
-	Underlay   Underlay        `json:"underlay,omitempty"`
-	IA         string          `json:"isd_as"`
-	LinkTo     string          `json:"link_to"`
-	MTU        int             `json:"mtu"`
-	BFD        *BFD            `json:"bfd,omitempty"`
-	RemoteIFID common.IFIDType `json:"remote_interface_id,omitempty"`
-}
-
-// Underlay is the underlay information for a BR interface.
-type Underlay struct {
-	Local            string `json:"local,omitempty"`
-	DeprecatedBind   string `json:"bind,omitempty"`   // superseded by "local", for backwards compat
-	DeprecatedPublic string `json:"public,omitempty"` // superseded by "local", for backwards compat
-	Remote           string `json:"remote,omitempty"`
+	Underlay   ExternalUnderlay `json:"underlay,omitempty"`
+	IA         string           `json:"isd_as"`
+	LinkTo     string           `json:"link_to"`
+	MTU        int              `json:"mtu"`
+	BFD        *BFD             `json:"bfd,omitempty"`
+	RemoteIFID common.IFIDType  `json:"remote_interface_id,omitempty"`
 }
 
 // BFD configuration.

@@ -26,6 +26,8 @@ import (
 	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/private/topology"
+	"github.com/scionproto/scion/private/underlay/raw"
+	"github.com/scionproto/scion/private/underlay/raw/protocols"
 )
 
 // Dataplane is the interface that a dataplane has to support to be controlled
@@ -34,6 +36,11 @@ type Dataplane interface {
 	CreateIACtx(ia addr.IA) error
 	AddInternalInterface(ia addr.IA, local netip.AddrPort) error
 	AddExternalInterface(localIfID common.IFIDType, info LinkInfo, owned bool) error
+	GetRawReceiver(hwIfId int, protocol protocols.ProtocolType) (raw.Protocol, error)
+	AddRawSender(hwIfId int, swIfId common.IFIDType, protocol protocols.ProtocolType,
+		serializeFn raw.SerializeFn, external bool,
+		internalIdentifiers []topology.InternalUnderlayIdentifier,
+		iface topology.IFInfo) error
 	AddSvc(ia addr.IA, svc addr.SVC, a *net.UDPAddr) error
 	DelSvc(ia addr.IA, svc addr.SVC, a *net.UDPAddr) error
 	SetKey(ia addr.IA, index int, key []byte) error
@@ -139,6 +146,10 @@ func ConfigDataplane(dp Dataplane, cfg *Config) error {
 			if err := dp.AddInternalInterface(cfg.IA, cfg.BR.InternalAddr); err != nil {
 				return err
 			}
+			// Configure alternative AS-internal underlays
+			if err := confInternalAltUnderlays(dp, cfg); err != nil {
+				return err
+			}
 		}
 		// Add external interfaces
 		if err := confExternalInterfaces(dp, cfg); err != nil {
@@ -181,15 +192,24 @@ func confExternalInterfaces(dp Dataplane, cfg *Config) error {
 	// External interfaces
 	for _, ifid := range ifids {
 		iface := infoMap[ifid]
+		_, owned := cfg.BR.IFs[ifid]
+		if owned && iface.Underlay.Type != protocols.DEFAULT_IP_UDP {
+			// We own this interface going to external, plus it was specified that this interface
+			// uses a raw underlay, so we initialize the raw underlay
+			if err := confAltExtUnderlay(iface, dp); err != nil {
+				return err
+			}
+			continue
+		}
 		linkInfo := LinkInfo{
 			Local: LinkEnd{
 				IA:   cfg.IA,
-				Addr: net.UDPAddrFromAddrPort(iface.Local),
+				Addr: net.UDPAddrFromAddrPort(iface.Underlay.LocalIp),
 				IFID: iface.ID,
 			},
 			Remote: LinkEnd{
 				IA:   iface.IA,
-				Addr: net.UDPAddrFromAddrPort(iface.Remote),
+				Addr: net.UDPAddrFromAddrPort(iface.Underlay.RemoteIp),
 				IFID: iface.RemoteIFID,
 			},
 			Instance: iface.BRName,
@@ -198,7 +218,6 @@ func confExternalInterfaces(dp Dataplane, cfg *Config) error {
 			MTU:      iface.MTU,
 		}
 
-		_, owned := cfg.BR.IFs[ifid]
 		if !owned {
 			// XXX The current implementation effectively uses IP/UDP tunnels to create
 			// the SCION network as an overlay, with forwarding to local hosts being a special case.

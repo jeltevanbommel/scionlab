@@ -28,6 +28,7 @@ import (
 	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/xtest"
 	jsontopo "github.com/scionproto/scion/private/topology/json"
+	"github.com/scionproto/scion/private/underlay/raw/protocols"
 )
 
 func TestMeta(t *testing.T) {
@@ -196,11 +197,14 @@ func TestIFInfoMap(t *testing.T) {
 			ID:           1,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("192.0.2.1:44997"),
-			Remote:       netip.MustParseAddrPort("192.0.2.2:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:312"),
-			LinkType:     Parent,
-			MTU:          1472,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("192.0.2.1:44997"),
+				RemoteIp: netip.MustParseAddrPort("192.0.2.2:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:312"),
+			LinkType: Parent,
+			MTU:      1472,
 			BFD: BFD{
 				DetectMult:            10,
 				DesiredMinTxInterval:  10 * time.Millisecond,
@@ -211,31 +215,40 @@ func TestIFInfoMap(t *testing.T) {
 			ID:           3,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("[2001:db8:a0b:12f0::1]:44997"),
-			Remote:       netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:314"),
-			LinkType:     Child,
-			MTU:          4430,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("[2001:db8:a0b:12f0::1]:44997"),
+				RemoteIp: netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:314"),
+			LinkType: Child,
+			MTU:      4430,
 		},
 		8: IFInfo{
 			ID:           8,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.AddrPortFrom(netip.Addr{}, 44997),
-			Remote:       netip.MustParseAddrPort("192.0.2.3:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:313"),
-			LinkType:     Peer,
-			MTU:          1480,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.AddrPortFrom(netip.Addr{}, 44997),
+				RemoteIp: netip.MustParseAddrPort("192.0.2.3:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:313"),
+			LinkType: Peer,
+			MTU:      1480,
 		},
 		11: IFInfo{
 			ID:           11,
 			BRName:       "br1-ff00:0:311-2",
 			InternalAddr: netip.MustParseAddrPort(`[2001:db8:a0b:12f0::1%some-internal-zone]:0`),
-			Local:        netip.MustParseAddrPort(`[2001:db8:a0b:12f0::1%some-local-zone]:44897`),
-			Remote:       netip.MustParseAddrPort(`[2001:db8:a0b:12f0::2%some-remote-zone]:44898`),
-			IA:           xtest.MustParseIA("1-ff00:0:314"),
-			LinkType:     Child,
-			MTU:          4430,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort(`[2001:db8:a0b:12f0::1%some-local-zone]:44897`),
+				RemoteIp: netip.MustParseAddrPort(`[2001:db8:a0b:12f0::2%some-remote-zone]:44898`),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:314"),
+			LinkType: Child,
+			MTU:      4430,
 		},
 	}
 	assert.Equal(t, ifm, c.IFInfoMap)
@@ -249,33 +262,42 @@ func TestIFInfoMapDeprecatedPublicBind(t *testing.T) {
 			ID:           1,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("10.0.0.1:44997"),
-			Remote:       netip.MustParseAddrPort("192.0.2.2:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:312"),
-			LinkType:     Parent,
-			MTU:          1472,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("10.0.0.1:44997"),
+				RemoteIp: netip.MustParseAddrPort("192.0.2.2:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:312"),
+			LinkType: Parent,
+			MTU:      1472,
 		},
 		// local: bind IP, public port
 		3: IFInfo{
 			ID:           3,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("[2001:db8:a0b:12f0::8]:44997"),
-			Remote:       netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:314"),
-			LinkType:     Child,
-			MTU:          4430,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("[2001:db8:a0b:12f0::8]:44997"),
+				RemoteIp: netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:314"),
+			LinkType: Child,
+			MTU:      4430,
 		},
 		// local: public, no bind
 		8: IFInfo{
 			ID:           8,
 			BRName:       "br1-ff00:0:311-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("192.0.2.2:44997"),
-			Remote:       netip.MustParseAddrPort("192.0.2.3:44998"),
-			IA:           xtest.MustParseIA("1-ff00:0:313"),
-			LinkType:     Peer,
-			MTU:          1480,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("192.0.2.2:44997"),
+				RemoteIp: netip.MustParseAddrPort("192.0.2.3:44998"),
+			},
+			IA:       xtest.MustParseIA("1-ff00:0:313"),
+			LinkType: Peer,
+			MTU:      1480,
 		},
 	}
 	assert.Equal(t, ifm, c.IFInfoMap)
@@ -289,21 +311,27 @@ func TestIFInfoMapCoreAS(t *testing.T) {
 			ID:           91,
 			BRName:       "borderrouter6-ff00:0:362-1",
 			InternalAddr: netip.MustParseAddrPort("10.1.0.1:0"),
-			Local:        netip.MustParseAddrPort("192.0.2.1:4997"),
-			Remote:       netip.MustParseAddrPort("192.0.2.2:4998"),
-			IA:           xtest.MustParseIA("6-ff00:0:363"),
-			LinkType:     Core,
-			MTU:          1472,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("192.0.2.1:4997"),
+				RemoteIp: netip.MustParseAddrPort("192.0.2.2:4998"),
+			},
+			IA:       xtest.MustParseIA("6-ff00:0:363"),
+			LinkType: Core,
+			MTU:      1472,
 		},
 		32: IFInfo{
 			ID:           32,
 			BRName:       "borderrouter6-ff00:0:362-9",
 			InternalAddr: netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:0"),
-			Local:        netip.MustParseAddrPort("[2001:db8:a0b:12f0::1]:4997"),
-			Remote:       netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:4998"),
-			IA:           xtest.MustParseIA("6-ff00:0:364"),
-			LinkType:     Child,
-			MTU:          4430,
+			Underlay: ExternalUnderlayInfo{
+				Type:     protocols.DEFAULT_IP_UDP,
+				LocalIp:  netip.MustParseAddrPort("[2001:db8:a0b:12f0::1]:4997"),
+				RemoteIp: netip.MustParseAddrPort("[2001:db8:a0b:12f0::2]:4998"),
+			},
+			IA:       xtest.MustParseIA("6-ff00:0:364"),
+			LinkType: Child,
+			MTU:      4430,
 		},
 	}
 	assert.Equal(t, ifm, c.IFInfoMap)
@@ -341,18 +369,18 @@ func TestCopy(t *testing.T) {
 func TestExternalDataPlanePort(t *testing.T) {
 	testCases := []struct {
 		Name            string
-		Raw             *jsontopo.Underlay
+		Raw             *jsontopo.ExternalUnderlay
 		ExpectedAddress netip.AddrPort
 		ExpectedError   assert.ErrorAssertionFunc
 	}{
 		{
 			Name:          "Empty",
-			Raw:           &jsontopo.Underlay{},
+			Raw:           &jsontopo.ExternalUnderlay{},
 			ExpectedError: assert.Error,
 		},
 		{
 			Name: "Port only",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				Local: ":42",
 			},
 			ExpectedError:   assert.NoError,
@@ -360,7 +388,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Good IPv4",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				Local: "127.0.0.1:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -368,7 +396,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Good IPv6",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				Local: "[::1]:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -376,7 +404,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Good IPv6 with zone",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				Local: "[::1%some-zone]:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -385,7 +413,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		// Deprecated Public / Bind
 		{
 			Name: "Both deprecated public and local",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "something:42",
 				Local:            "fnord:99",
 			},
@@ -393,14 +421,14 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated Bad invalid public",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "thishostdoesnotexist:42",
 			},
 			ExpectedError: assert.Error,
 		},
 		{
 			Name: "Deprecated Good IPv4 only",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "127.0.0.1:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -408,7 +436,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated IPv4 with bind underlay",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "127.0.0.1:42",
 				DeprecatedBind:   "127.255.255.255",
 			},
@@ -417,7 +445,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated IPv4 with bad bind",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "127.0.0.1:42",
 				DeprecatedBind:   "thishostdoesnotexist",
 			},
@@ -425,7 +453,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated Good IPv6 only",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "[::1]:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -433,7 +461,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated Good IPv6 only with zone",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "[::1%some-zone]:42",
 			},
 			ExpectedError:   assert.NoError,
@@ -441,7 +469,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated IPv6 with bind underlay",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "[::1]:42",
 				DeprecatedBind:   "2001:db8::1",
 			},
@@ -450,7 +478,7 @@ func TestExternalDataPlanePort(t *testing.T) {
 		},
 		{
 			Name: "Deprecated IPv6 with bad bind underlay",
-			Raw: &jsontopo.Underlay{
+			Raw: &jsontopo.ExternalUnderlay{
 				DeprecatedPublic: "[::1]:42",
 				DeprecatedBind:   "thishostdoesnotexist",
 			},

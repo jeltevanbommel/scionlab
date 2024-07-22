@@ -107,6 +107,7 @@ func (c *Connector) AddExternalInterface(localIfID common.IFIDType, link control
 	}
 
 	link.BFD = c.applyBFDDefaults(link.BFD)
+	//TODO(jvanbommel): owned different again?
 	if owned {
 		if len(c.externalInterfaces) == 0 {
 			c.externalInterfaces = make(map[uint16]control.ExternalInterface)

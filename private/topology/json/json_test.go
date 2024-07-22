@@ -48,7 +48,7 @@ func TestLoadRawFromFile(t *testing.T) {
 				InternalAddr: "10.1.0.1:0",
 				Interfaces: map[common.IFIDType]*jsontopo.BRInterface{
 					91: {
-						Underlay: jsontopo.Underlay{
+						Underlay: jsontopo.ExternalUnderlay{
 							Local:  "192.0.2.1:4997",
 							Remote: "192.0.2.2:4998",
 						},
@@ -67,7 +67,7 @@ func TestLoadRawFromFile(t *testing.T) {
 				InternalAddr: "[2001:db8:a0b:12f0::2]:0",
 				Interfaces: map[common.IFIDType]*jsontopo.BRInterface{
 					32: {
-						Underlay: jsontopo.Underlay{
+						Underlay: jsontopo.ExternalUnderlay{
 							Local:  "[2001:db8:a0b:12f0::1]:4997",
 							Remote: "[2001:db8:a0b:12f0::2]:4998",
 						},

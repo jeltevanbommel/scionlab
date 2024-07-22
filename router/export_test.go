@@ -46,7 +46,7 @@ type ProcessResult struct {
 var SlowPathRequired error = slowPathRequired
 
 func NewDP(
-	external map[uint16]BatchConn,
+	external map[uint16]bool,
 	linkTypes map[uint16]topology.LinkType,
 	internal BatchConn,
 	internalNextHops map[uint16]*net.UDPAddr,
@@ -88,7 +88,7 @@ func (d *DataPlane) ProcessPkt(ifID uint16, m *ipv4.Message) (ProcessResult, err
 	if m.Addr != nil {
 		srcAddr = m.Addr.(*net.UDPAddr)
 	}
-	result, err := p.processPkt(m.Buffers[0], srcAddr, ifID)
+	result, err := p.processPkt(m.Buffers[0], srcAddr, ifID, false)
 	return ProcessResult{processResult: result}, err
 }
 

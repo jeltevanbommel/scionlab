@@ -84,8 +84,8 @@ func TestReceiver(t *testing.T) {
 		NumProcessors: 1,
 		BatchSize:     64,
 	}
-	dp.initPacketPool(runConfig, 64)
-	procCh, _, _ := initQueues(runConfig, dp.interfaces, 64)
+	dp.initPacketPool(runConfig, 64, len(dp.rawForwarders))
+	procCh, _, _, _ := initQueues(runConfig, dp.interfaces, 64, dp.rawForwarders)
 	initialPoolSize := len(dp.packetPool)
 	dp.running = true
 	dp.initMetrics()
@@ -178,8 +178,8 @@ func TestForwarder(t *testing.T) {
 		NumProcessors: 20,
 		BatchSize:     64,
 	}
-	dp.initPacketPool(runConfig, 64)
-	_, fwCh, _ := initQueues(runConfig, dp.interfaces, 64)
+	dp.initPacketPool(runConfig, 64, 0)
+	_, fwCh, _, _ := initQueues(runConfig, dp.interfaces, 64, dp.rawForwarders)
 	initialPoolSize := len(dp.packetPool)
 	dp.running = true
 	dp.initMetrics()
@@ -431,7 +431,7 @@ func TestSlowPathProcessing(t *testing.T) {
 	// ProcessPacket assumes some pre-conditions:
 	// * The ingress interface has to exist. This fake map is good for the test cases we have.
 	// * InternalNextHops may not be nil. Empty is ok for all the test cases we have.
-	fakeExternalInterfaces := map[uint16]BatchConn{1: nil}
+	fakeExternalInterfaces := map[uint16]bool{1: true}
 	fakeInternalNextHops := map[uint16]*net.UDPAddr{}
 	testCases := map[string]struct {
 		mockMsg                 func() []byte
@@ -548,7 +548,7 @@ func TestSlowPathProcessing(t *testing.T) {
 			var srcAddr *net.UDPAddr
 
 			processor := newPacketProcessor(dp)
-			result, err := processor.processPkt(rawPacket, srcAddr, tc.srcInterface)
+			result, err := processor.processPkt(rawPacket, srcAddr, tc.srcInterface, false)
 			assert.ErrorIs(t, err, SlowPathRequired)
 
 			assert.Equal(t, tc.expectedSlowPathRequest, result.SlowPathRequest)

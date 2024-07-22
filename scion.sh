@@ -1,5 +1,6 @@
 #!/bin/bash
 
+source "/home/jelte/py/bin/activate"
 # BEGIN subcommand functions
 
 cmd_bazel-remote() {
@@ -23,7 +24,7 @@ cmd_topology() {
     cmd_topo-clean
 
     echo "Create topology, configuration, and execution files."
-    tools/topogen.py "$@"
+    python3 tools/topogen.py "$@"
 }
 
 cmd_topodot() {
