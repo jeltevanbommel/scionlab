@@ -147,7 +147,6 @@ func updateFabridInfo(ctx context.Context, dialer libgrpc.Dialer, detachedHops [
 		detachedHop.Meta.FabridInfo[detachedHop.fiIdx] = *combinator.
 			GetFabridInfoForIntfs(detachedHop.IA, detachedHop.Ingress, detachedHop.Egress,
 				fabridMaps, true)
-		log.Debug("Fetched detached hop", "fabridInfo", detachedHop.Meta.FabridInfo[detachedHop.fiIdx])
 	}
 }
 

@@ -263,8 +263,8 @@ func (s server) handlePingFabrid(conn snet.PacketConn) error {
 		return serrors.WrapStr("reading packet", err)
 	}
 
-	// If fabrid flag is set and packet is from remote IA, validate the FABRID path
-	if fabrid && p.Source.IA != integration.Local.IA {
+	// If the packet is from remote IA, validate the FABRID path
+	if p.Source.IA != integration.Local.IA {
 		if p.HbhExtension == nil {
 			return serrors.New("Missing HBH extension")
 		}
@@ -314,7 +314,7 @@ func (s server) handlePingFabrid(conn snet.PacketConn) error {
 		}
 		hostHostKey, err := integration.SDConn().DRKeyGetHostHostKey(context.Background(), meta)
 		if err != nil {
-			return err
+			return serrors.WrapStr("getting host key", err)
 		}
 
 		tmpBuffer := make([]byte, (len(fabridOption.HopfieldMetadata)*3+15)&^15+16)
@@ -560,30 +560,41 @@ func (c *client) getRemote(ctx context.Context, n int) (snet.Path, error) {
 		remote.Path = epicPath
 	} else if fabrid {
 		// If the fabrid flag is set, try to create FABRID dataplane path.
-		scionPath, ok := path.Dataplane().(snetpath.SCION)
-		if !ok {
-			return nil, serrors.New("provided path must be of type scion")
+		if len(path.Metadata().FabridInfo) > 0 {
+			// Check if fabrid info is available, otherwise the source
+			// AS does not support fabrid
+
+			scionPath, ok := path.Dataplane().(snetpath.SCION)
+			if !ok {
+				return nil, serrors.New("provided path must be of type scion")
+			}
+			fabridConfig := &snetpath.FabridConfig{
+				LocalIA:         integration.Local.IA,
+				LocalAddr:       integration.Local.Host.IP.String(),
+				DestinationIA:   remote.IA,
+				DestinationAddr: remote.Host.IP.String(),
+			}
+			hops := path.Metadata().Hops()
+			log.Info("Fabrid path", "path", path, "hops", hops)
+			// Use ZERO policy for all hops with fabrid, to just do path validation
+			policies := make([]*libfabrid.PolicyID, len(hops))
+			zeroPol := libfabrid.PolicyID(0)
+			for i, hop := range hops {
+				if hop.FabridEnabled {
+					policies[i] = &zeroPol
+				}
+			}
+			fabridPath, err := snetpath.NewFABRIDDataplanePath(scionPath, hops,
+				policies, fabridConfig)
+			if err != nil {
+				return nil, serrors.New("Error creating FABRID path", "err", err)
+			}
+			remote.Path = fabridPath
+			fabridPath.RegisterDRKeyFetcher(c.sdConn.FabridKeys)
+		} else {
+			log.Info("FABRID flag was set for client in non-FABRID AS. Proceeding without FABRID.")
+			remote.Path = path.Dataplane()
 		}
-		fabridConfig := &snetpath.FabridConfig{
-			LocalIA:         integration.Local.IA,
-			LocalAddr:       integration.Local.Host.IP.String(),
-			DestinationIA:   remote.IA,
-			DestinationAddr: remote.Host.IP.String(),
-		}
-		hops := path.Metadata().Hops()
-		// Use ZERO policy for all hops, to just do path validation
-		policies := make([]*libfabrid.PolicyID, len(hops))
-		zeroPol := libfabrid.PolicyID(0)
-		for i := 0; i < len(hops); i++ {
-			policies[i] = &zeroPol
-		}
-		fabridPath, err := snetpath.NewFABRIDDataplanePath(scionPath, hops,
-			policies, fabridConfig)
-		if err != nil {
-			return nil, serrors.New("Error creating FABRID path", "err", err)
-		}
-		remote.Path = fabridPath
-		fabridPath.RegisterDRKeyFetcher(c.sdConn.FabridKeys)
 	} else {
 		remote.Path = path.Dataplane()
 	}
