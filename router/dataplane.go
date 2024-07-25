@@ -128,6 +128,7 @@ var (
 	invalidSrcIA                  = errors.New("invalid source ISD-AS")
 	invalidDstIA                  = errors.New("invalid destination ISD-AS")
 	invalidSrcAddrForTransit      = errors.New("invalid source address for transit pkt")
+	invalidDstAddr                = errors.New("invalid destination address")
 	cannotRoute                   = errors.New("cannot route, dropping pkt")
 	emptyValue                    = errors.New("empty value")
 	malformedPath                 = errors.New("malformed path content")
@@ -1803,6 +1804,14 @@ func (p *scionPacketProcessor) resolveInbound() (*net.UDPAddr, processResult, er
 			cause:    err,
 		}
 		return nil, processResult{SlowPathRequest: slowPathRequest}, slowPathRequired
+	case errors.Is(err, invalidDstAddr):
+		log.Debug("SCMP: invalid destination address")
+		slowPathRequest := slowPathRequest{
+			scmpType: slayers.SCMPTypeParameterProblem,
+			code:     slayers.SCMPCodeInvalidDestinationAddress,
+			cause:    err,
+		}
+		return nil, processResult{SlowPathRequest: slowPathRequest}, slowPathRequired
 	default:
 		return a, processResult{}, nil
 	}
@@ -2218,8 +2227,7 @@ func (d *DataPlane) resolveLocalDst(
 
 	dst, err := s.DstAddr()
 	if err != nil {
-		// TODO parameter problem.
-		return nil, err
+		return nil, invalidDstAddr
 	}
 	switch dst.Type() {
 	case addr.HostTypeSVC:
