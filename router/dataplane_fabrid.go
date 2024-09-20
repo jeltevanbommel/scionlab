@@ -20,6 +20,8 @@ import (
 	"github.com/scionproto/scion/pkg/drkey"
 	"github.com/scionproto/scion/pkg/experimental/fabrid/crypto"
 	"github.com/scionproto/scion/pkg/private/serrors"
+	"github.com/scionproto/scion/pkg/slayers"
+	"github.com/scionproto/scion/pkg/slayers/extension"
 	"github.com/scionproto/scion/router/control"
 )
 
@@ -138,4 +140,69 @@ func (d *DataPlane) getFabridMplsLabel(ingressID uint32, policyIndex uint32,
 			"index", policyIndex, "next hop IP", nextHopIP)
 	}
 	return bestRange.MPLSLabel, nil
+}
+
+func (p *scionPacketProcessor) processHbhOptions(egressIF uint16) error {
+	var err error
+	for _, opt := range p.hbhLayer.Options {
+		switch opt.OptType {
+		case slayers.OptTypeIdentifier:
+			if p.identifier != nil {
+				return serrors.New("Identifier HBH option provided multiple times")
+			}
+			// TODO(marcodermatt): Find cleaner solution for getting timestamp of first InfoField
+			baseTimestamp := p.infoField.Timestamp
+			if p.path.PathMeta.CurrINF > 0 {
+				firstInfoField, err := p.path.GetInfoField(0)
+				if err != nil {
+					return serrors.New("Failed to parse first InfoField")
+				}
+				baseTimestamp = firstInfoField.Timestamp
+			}
+			p.identifier, err = extension.ParseIdentifierOption(opt, baseTimestamp)
+			if err != nil {
+				return err
+			}
+		case slayers.OptTypeFabrid:
+			if p.fabrid != nil {
+				return serrors.New("FABRID HBH option provided multiple times")
+			}
+			if p.identifier == nil {
+				return serrors.New("Identifier HBH option must be present when using FABRID")
+			}
+
+			// Calculate FABRID hop index
+			currHop := p.path.PathMeta.CurrHF
+			if !p.infoField.Peer {
+				currHop -= p.path.PathMeta.CurrINF
+			}
+
+			// Skip if this is an intermediary egress router
+			if p.ingressID == 0 && currHop != 0 {
+				return nil
+			}
+
+			// Calculate number of FABRID hops
+			numHFs := p.path.NumHops - p.path.NumINF + 1
+			if p.infoField.Peer {
+				numHFs++
+			}
+			fabrid, err := extension.ParseFabridOptionCurrentHop(opt, currHop, uint8(numHFs))
+			if err != nil {
+				return err
+			}
+			if fabrid.HopfieldMetadata[0].FabridEnabled {
+				p.fabrid = fabrid
+				if err = p.processFabrid(egressIF); err != nil {
+					return err
+				}
+				if err = fabrid.HopfieldMetadata[0].SerializeTo(opt.
+					OptData[currHop*4:]); err != nil {
+					return err
+				}
+			}
+		default:
+		}
+	}
+	return err
 }
