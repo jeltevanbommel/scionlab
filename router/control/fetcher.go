@@ -1,4 +1,4 @@
-// Copyright 2023 ETH Zürich
+// Copyright 2024 ETH Zürich
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,6 +47,7 @@ type Fetcher struct {
 	dp         Dataplane
 }
 
+// NewFetcher returns a new fetcher that is used to make queries to the control service.
 func NewFetcher(localIP string, csAddr string, dp Dataplane) (*Fetcher, error) {
 	localAddr := &net.TCPAddr{
 		IP:   net.ParseIP(localIP),
@@ -64,6 +65,8 @@ func NewFetcher(localIP string, csAddr string, dp Dataplane) (*Fetcher, error) {
 	return f, nil
 }
 
+// StartFabridPolicyFetcher starts the FABRID policy fetcher that fetches the FABRID
+// policies from the local control service every 30 minutes.
 func (f *Fetcher) StartFabridPolicyFetcher() {
 	retryAfterErrorDuration := 10 * time.Second
 	for {
@@ -137,6 +140,10 @@ func (f *Fetcher) queryFabridPolicies() (*experimental.MPLSMapResponse, error) {
 	return rep, err
 }
 
+// StartSecretUpdater is responsible for querying the local control service to request the
+// DRKey secret values for the registered DRKey protocols. (e.g. FABRID, SCMP, ...)
+// It will automatically register the received DRKey secrets in the dataplane and start
+// prefetching the upcoming secret values 3 minutes before they become valid.
 func (f *Fetcher) StartSecretUpdater(protocols []string) {
 	retryAfterErrorDuration := 5 * time.Second
 	prefetchTime := time.Minute * 3

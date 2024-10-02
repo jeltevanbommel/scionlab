@@ -37,6 +37,8 @@ from topology.common import (
     SD_CONFIG_NAME,
 )
 
+from topology.endhost import endhost_ip
+
 from topology.net import socket_address_str, NetworkDescription, IPNetwork
 
 from topology.monitoring import (
