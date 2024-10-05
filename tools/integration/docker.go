@@ -57,6 +57,7 @@ func dockerize(bi *binaryIntegration) Integration {
 	return bi
 }
 
+// StartServer starts a server and blocks until the ReadySignal is received on Stdout.
 func (di *dockerIntegration) StartServer(ctx context.Context, dst *snet.UDPAddr) (Waiter, error) {
 	bi := *di.binaryIntegration
 	bi.serverArgs = append(dockerArgs, append([]string{TesterID(dst), bi.cmd}, bi.serverArgs...)...)

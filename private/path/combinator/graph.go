@@ -311,7 +311,6 @@ type pathSolution struct {
 
 // Path builds the forwarding path with metadata by extracting it from a path
 // between source and destination in the DMG.
-
 func (solution *pathSolution) Path() Path {
 	mtu := ^uint16(0)
 	var segments segmentList
@@ -476,6 +475,7 @@ func getAuthPeer(a *seg.ASEntry, i int) []byte {
 	copy(auth[6:16], a.UnsignedExtensions.EpicDetached.AuthPeerEntries[i])
 	return auth
 }
+
 func isEpicAvailable(epicPathAuths [][]byte) ([]byte, []byte, bool) {
 	l := len(epicPathAuths)
 	if l < 2 {

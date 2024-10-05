@@ -44,7 +44,6 @@ import (
 	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/private/util"
-	"github.com/scionproto/scion/pkg/slayers"
 	"github.com/scionproto/scion/pkg/slayers/extension"
 	"github.com/scionproto/scion/pkg/snet"
 	"github.com/scionproto/scion/pkg/snet/metrics"
@@ -510,74 +509,6 @@ func (c *client) pong(ctx context.Context) error {
 		return serrors.New("unexpected contents received", "data", pld, "expected", expected)
 	}
 	log.Info("Received pong", "server", serverAddr)
-	return nil
-}
-
-func (c *client) fabridPong(ctx context.Context) error {
-
-	if err := c.rawConn.SetReadDeadline(getDeadline(ctx)); err != nil {
-		return serrors.WrapStr("setting read deadline", err)
-	}
-	var p snet.Packet
-	var ov net.UDPAddr
-	err := readFromFabrid(c.rawConn, &p, &ov)
-	if err != nil {
-		return serrors.WrapStr("reading packet", err)
-	}
-	if p.Source.IA != integration.Local.IA {
-		// Check extensions for relevant options
-		var controlOptions []*extension.FabridControlOption
-
-		if p.E2eExtension != nil {
-
-			for _, opt := range p.E2eExtension.Options {
-				switch opt.OptType {
-				case slayers.OptTypeFabridControl:
-					controlOption, err := extension.ParseFabridControlOption(opt)
-					if err != nil {
-						return err
-					}
-					controlOptions = append(controlOptions, controlOption)
-					log.Debug("Parsed control option", "option", controlOption)
-				}
-			}
-		}
-		switch s := remote.Path.(type) {
-		case *snetpath.FABRID:
-			for _, option := range controlOptions {
-				err := s.HandleFabridControlOption(option, nil)
-				if err != nil {
-					return err
-				}
-			}
-
-		default:
-			return serrors.New("unsupported path type")
-		}
-	}
-
-	udp, ok := p.Payload.(snet.UDPPayload)
-	if !ok {
-		return serrors.New("unexpected payload received",
-			"source", p.Source,
-			"destination", p.Destination,
-			"type", common.TypeOf(p.Payload),
-		)
-	}
-	var pld Pong
-	if err := json.Unmarshal(udp.Payload, &pld); err != nil {
-		return serrors.WrapStr("unpacking pong", err, "data", string(udp.Payload))
-	}
-
-	expected := Pong{
-		Client:  integration.Local.IA,
-		Server:  remote.IA,
-		Message: pong,
-	}
-	if pld.Client != expected.Client || pld.Server != expected.Server || pld.Message != pong {
-		return serrors.New("unexpected contents received", "data", pld, "expected", expected)
-	}
-	log.Info("Received pong", "server", ov)
 	return nil
 }
 

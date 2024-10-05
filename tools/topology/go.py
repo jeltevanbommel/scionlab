@@ -30,7 +30,6 @@ from topology.common import (
     prom_addr,
     prom_addr_dispatcher,
     sciond_ip,
-    endhost_ip,
     sciond_name,
     translate_features,
     SD_API_PORT,
