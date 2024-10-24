@@ -22,6 +22,9 @@ import (
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/slayers"
 	"github.com/scionproto/scion/pkg/slayers/extension"
+	"github.com/scionproto/scion/private/topology"
+	"github.com/scionproto/scion/private/underlay/raw"
+	"github.com/scionproto/scion/private/underlay/raw/protocols"
 	"github.com/scionproto/scion/router/control"
 )
 
@@ -67,11 +70,13 @@ func (p *scionPacketProcessor) processFabrid(egressIF uint16) error {
 	// Check / set MPLS label only if policy ID != 0
 	// and only if the packet will be sent within the AS or to another router of the local AS
 	if policyID != 0 {
+		var dstIp *net.UDPAddr
 		var mplsLabel uint32
 		switch p.transitType {
 		case ingressEgressDifferentRouter:
 			mplsLabel, err = p.d.getFabridMplsLabelForInterface(uint32(p.ingressID),
 				uint32(policyID), uint32(egressIF))
+			dstIp = p.d.internalNextHops[egressIF]
 		case internalTraffic:
 			mplsLabel, err = p.d.getFabridMplsLabel(uint32(p.ingressID), uint32(policyID),
 				p.nextHop.IP)
@@ -79,13 +84,24 @@ func (p *scionPacketProcessor) processFabrid(egressIF uint16) error {
 				mplsLabel, err = p.d.getFabridMplsLabelForInterface(uint32(p.ingressID),
 					uint32(policyID), 0)
 			}
+			dstIp = p.nextHop
 		case ingressEgressSameRouter:
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		p.mplsLabel = mplsLabel
+		p.rawFwArgs = raw.ForwardingArgs{
+			ProtocolArgs: protocols.MPLSIPv4UDPForwardingArguments{
+				Label:              mplsLabel,
+				DestinationAddress: dstIp,
+			},
+		}
+		p.outUnderlay = &topology.InternalUnderlayIdentifier{
+			IntfIndex: egressIF,
+			Protocol:  protocols.MPLS_IP_UDP,
+			Label:     mplsLabel,
+		}
 	}
 	return nil
 }

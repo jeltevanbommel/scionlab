@@ -98,6 +98,9 @@ type (
 		IFIDs []common.IFIDType
 		// IFs is a map of interface IDs.
 		IFs map[common.IFIDType]*IFInfo
+		// AltUnderlays is the list of alternative underlays that are specific for local AS
+		//communication.
+		AltUnderlays []InternalUnderlayInfo
 	}
 
 	// IfInfoMap maps interface ids to the interface information.
@@ -111,8 +114,7 @@ type (
 		ID           common.IFIDType
 		BRName       string
 		InternalAddr netip.AddrPort
-		Local        netip.AddrPort
-		Remote       netip.AddrPort
+		Underlay     ExternalUnderlayInfo
 		RemoteIFID   common.IFIDType
 		IA           addr.IA
 		LinkType     LinkType
@@ -269,6 +271,16 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 			InternalAddr: intAddr,
 			IFs:          make(map[common.IFIDType]*IFInfo),
 		}
+
+		// These fields are only applicable for the border router;
+		if len(rawBr.AltUnderlays) > 0 {
+			aus, err := InternalUnderlaysFromJson(rawBr.AltUnderlays)
+			if err != nil {
+				return serrors.WrapStr("failed to parse AltUnderlays", err)
+			}
+			brInfo.AltUnderlays = aus
+		}
+
 		for ifid, rawIntf := range rawBr.Interfaces {
 			var err error
 			// Check that ifid is unique
@@ -304,18 +316,13 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 
 			// These fields are only necessary for the border router.
 			// Parsing should not fail if all fields are empty.
-			if rawIntf.Underlay == (jsontopo.Underlay{}) {
+			if rawIntf.Underlay == (jsontopo.ExternalUnderlay{}) {
 				brInfo.IFs[ifid] = &ifinfo
 				t.IFInfoMap[ifid] = ifinfo
 				continue
 			}
-			if ifinfo.Local, err = rawBRIntfLocalAddr(&rawIntf.Underlay); err != nil {
-				return serrors.WrapStr("unable to extract "+
-					"underlay external data-plane local address", err)
-			}
-			if ifinfo.Remote, err = resolveAddrPort(rawIntf.Underlay.Remote); err != nil {
-				return serrors.WrapStr("unable to extract "+
-					"underlay external data-plane remote address", err)
+			if ifinfo.Underlay, err = ExternalUnderlayFromJson(rawIntf.Underlay); err != nil {
+				return err
 			}
 			brInfo.IFs[ifid] = &ifinfo
 			t.IFInfoMap[ifid] = ifinfo
@@ -604,9 +611,9 @@ func (i IFInfo) CheckLinks(isCore bool, brName string) error {
 }
 
 func (i IFInfo) String() string {
-	return fmt.Sprintf("IFinfo: Name[%s] IntAddr[%+v] Local:%+v "+
-		"Remote:%+v IA:%s Type:%v MTU:%d", i.BRName, i.InternalAddr,
-		i.Local, i.Remote, i.IA, i.LinkType, i.MTU)
+	return fmt.Sprintf("IFinfo: Name[%s] IntAddr[%+v] Underlay[%s] "+
+		"IA:%s Type:%v MTU:%d", i.BRName, i.InternalAddr,
+		i.Underlay.String(), i.IA, i.LinkType, i.MTU)
 }
 
 func (i *IFInfo) copy() *IFInfo {
