@@ -168,38 +168,33 @@ func (d *DataPlane) runRawReceiver(hwIfID int32, conn raw.Conn, cfg *RunConfig,
 			// We need to make the unsafe slice for the entire rawPkt buffer, otherwise the capacity
 			// will not be set adequately, which means we leak memory when we return the packet to
 			// the pool.
-			rawPkt := unsafe.Slice(hs[i].Hdr.Iov.Base, hs[i].Hdr.Iov.Len)[:hs[i].Len]
-			offset, srcAddr, intf, err := conn.Protocol().ParsePacket(rawPkt)
+			fullPkt := unsafe.Slice(hs[i].Hdr.Iov.Base, hs[i].Hdr.Iov.Len)[:hs[i].Len]
+			offset, srcAddr, intf, err := conn.Protocol().ParsePacket(fullPkt)
 			if err != nil {
 				log.Debug("Error while parsing packet", "HW Interface ID", hwIfID, "err",
 					err)
 				continue
 			}
-			//TODO(jvanbommel): remove this copy, it should not be necessary if we properly pass the
-			// offset to the right functions.
-			pktCopy := <-d.packetPool
-			copy(pktCopy, rawPkt[offset:])
-			d.returnPacketToPool(rawPkt)
-			pktCopy = pktCopy[:uint(len(rawPkt))-offset]
+
 			outPkt := packet{
-				rawPacket:       pktCopy,
+				rawPacket:       fullPkt[offset:],
 				ingress:         intf,
 				validatedSource: !conn.Protocol().RequiresUDPSourceValidation(),
-				offset:          offset,
+				fullPacket:      fullPkt,
 				srcAddr:         srcAddr,
 			}
 			// Enqueue the packet for processing
 			procID, err := computeProcID(outPkt.rawPacket, cfg.NumProcessors, hashSeed)
 			if err != nil {
 				log.Debug("Error while computing procID", "err", err)
-				d.returnPacketToPool(rawPkt)
+				d.returnPacketToPool(fullPkt)
 				return
 			}
 
 			select {
 			case procQs[procID] <- outPkt:
 			default:
-				d.returnPacketToPool(pktCopy)
+				d.returnPacketToPool(fullPkt)
 			}
 			// Reset the control length and name length (optional) as they have been modified
 			// by the call to read batch.
@@ -364,6 +359,7 @@ func (d *DataPlane) runRawForwarder(ifID uint16, conn raw.Conn, fn raw.Serialize
 	msgs, iovecs := raw.MakeSendMessages(cfg.BatchSize)
 	hdrs := conn.Protocol().AllocateSenderBufs(cfg.BatchSize)
 	toWrite := 0
+	metrics := d.forwardingMetrics[ifID]
 
 	for d.running {
 		toWrite += readUpTo(c, cfg.BatchSize-toWrite, toWrite == 0, pkts[toWrite:])
@@ -375,7 +371,7 @@ func (d *DataPlane) runRawForwarder(ifID uint16, conn raw.Conn, fn raw.Serialize
 				log.Error("Failed to serialize header", "err", err, "protocol",
 					conn.Protocol().Name(),
 					"swIfId", ifID)
-				d.returnPacketToPool(p.rawPacket)
+				d.returnPacketToPool(p.fullPacket)
 				continue
 			}
 			// Set up the iovecs for sending the packet: the first entry in the iovec is the
@@ -394,17 +390,17 @@ func (d *DataPlane) runRawForwarder(ifID uint16, conn raw.Conn, fn raw.Serialize
 			written = 0
 		}
 
-		//updateOutputMetrics(metrics, pkts[:written])
+		updateOutputMetrics(metrics, pkts[:written])
 
 		for _, p := range pkts[:written] {
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 		}
 
 		if written != toWrite {
 			// Only one is dropped at this time. We'll retry the rest.
-			//sc := classOfSize(len(pkts[written].rawPacket))
-			//metrics[sc].DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(pkts[written].rawPacket)
+			sc := classOfSize(len(pkts[written].rawPacket))
+			metrics[sc].DroppedPacketsInvalid.Inc()
+			d.returnPacketToPool(pkts[written].fullPacket)
 			toWrite -= written + 1
 			// Shift the leftovers to the head of the buffers.
 			for i := 0; i < toWrite; i++ {

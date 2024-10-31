@@ -4,11 +4,11 @@ go_library(
     name = "go_default_library",
     srcs = [
         "connector.go",
-        "connector_raw.go",
         "connector_fabrid.go",
+        "connector_raw.go",
         "dataplane.go",
-        "dataplane_raw.go",
         "dataplane_fabrid.go",
+        "dataplane_raw.go",
         "fnv1aCheap.go",
         "metrics.go",
         "svc.go",

@@ -65,8 +65,9 @@ const (
 	// TODO(karampok). Investigate whether that value should be higher.  In
 	// theory, PayloadLen in SCION header is 16 bits long, supporting a maximum
 	// payload size of 64KB. At the moment we are limited by Ethernet size
-	// usually ~1500B, but 9000B to support jumbo frames.
-	bufSize = 9000
+	// usually ~1500B, but 9000B to support jumbo frames. 128B are added to support headers for
+	// the raw underlay.
+	bufSize = 9128
 
 	// hopFieldDefaultExpTime is the default validity of the hop field
 	// and 63 is equivalent to 6h.
@@ -641,13 +642,15 @@ type packet struct {
 	// than the traditional IP/UDP connections and thus does not need manual verification of the
 	// source sender.
 	validatedSource bool
-	// When using a raw socket to receive packets the raw packet data will contain protocol
-	// headers, the offset defines where the SCION packet header starts.
-	offset uint
 	// rawForwardingArgs stores the specific arguments that are used to forward the packet on a
 	// hardware interface. This contains protocol specific arguments, such as an MPLS label,
 	//as well as the destination MAC address.
 	rawForwardingArgs raw.ForwardingArgs
+	// fullPacket is a pointer to the full byte container in which rawPkt is contained. With the Raw
+	// underlay the rawPkt can be a slice in the fullPacket, as it needs to skip over added headers
+	// for processing. When the packet is returned to the packet pool, the full container should be
+	// used, as otherwise the memory would leak.
+	fullPacket []byte
 }
 
 type slowPacket struct {
@@ -690,9 +693,10 @@ func (d *DataPlane) runReceiver(ifID uint16, conn BatchConn, cfg *RunConfig,
 			return
 		}
 		outPkt := packet{
-			rawPacket: pkt.Buffers[0][:pkt.N],
-			ingress:   ifID,
-			srcAddr:   srcAddr,
+			rawPacket:  pkt.Buffers[0][:pkt.N],
+			fullPacket: pkt.Buffers[0][:pkt.N],
+			ingress:    ifID,
+			srcAddr:    srcAddr,
 		}
 		select {
 		case procQs[procID] <- outPkt:
@@ -777,17 +781,17 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet, fwQs map[uint16]chan p
 			case slowQ <- slowPacket{p, result.SlowPathRequest}:
 			default:
 				metrics.DroppedPacketsBusySlowPath.Inc()
-				d.returnPacketToPool(p.rawPacket)
+				d.returnPacketToPool(p.fullPacket)
 			}
 			continue
 		default:
 			log.Debug("Error processing packet", "err", err)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
 		if result.OutPkt == nil { // e.g. BFD case no message is forwarded
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
 		var fwCh chan packet
@@ -800,7 +804,7 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet, fwQs map[uint16]chan p
 		if !ok {
 			log.Debug("Error determining forwarder. Egress is invalid", "egress", egress)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
 		p.rawPacket = result.OutPkt
@@ -812,7 +816,7 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet, fwQs map[uint16]chan p
 		select {
 		case fwCh <- p:
 		default:
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			metrics.DroppedPacketsBusyForwarder.Inc()
 		}
 
@@ -835,7 +839,7 @@ func (d *DataPlane) runSlowPathProcessor(id int, q <-chan slowPacket,
 		if err != nil {
 			log.Debug("Error processing packet", "err", err)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 			continue
 		}
 		p.packet.dstAddr = res.OutAddr
@@ -844,13 +848,13 @@ func (d *DataPlane) runSlowPathProcessor(id int, q <-chan slowPacket,
 		fwCh, ok := fwQs[res.EgressID]
 		if !ok {
 			log.Debug("Error determining forwarder. Egress is invalid", "egress", res.EgressID)
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 			continue
 		}
 		select {
 		case fwCh <- p.packet:
 		default:
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 		}
 	}
 }
@@ -1038,14 +1042,14 @@ func (d *DataPlane) runForwarder(ifID uint16, conn BatchConn, cfg *RunConfig, c 
 		updateOutputMetrics(metrics, pkts[:written])
 
 		for _, p := range pkts[:written] {
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 		}
 
 		if written != toWrite {
 			// Only one is dropped at this time. We'll retry the rest.
 			sc := classOfSize(len(pkts[written].rawPacket))
 			metrics[sc].DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(pkts[written].rawPacket)
+			d.returnPacketToPool(pkts[written].fullPacket)
 			toWrite -= (written + 1)
 			// Shift the leftovers to the head of the buffers.
 			for i := 0; i < toWrite; i++ {

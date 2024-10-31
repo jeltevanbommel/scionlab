@@ -1,9 +1,3 @@
-
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root" 1>&2
-   exit 1
-fi
-
 sudo ip link add veth-as110 type dummy
 sudo ip link add veth-as112 type dummy
 sudo ip link add veth-br111_112 type dummy
