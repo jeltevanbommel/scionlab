@@ -2710,8 +2710,10 @@ func (d *DataPlane) initMetrics() {
 		d.forwardingMetrics[id] = newInterfaceMetrics(d.Metrics, id, d.localIA, d.neighborIAs)
 
 	}
-	for _, hwIfId := range d.rawInterfaces {
-		d.forwardingMetrics[uint16(hwIfId)] = newInterfaceMetrics(d.Metrics, uint16(hwIfId), d.localIA, d.neighborIAs)
+	//TODO(jvanbommel): should be software interfaces, check if we should skip external ones.
+	for swIf, _ := range d.rawForwarders {
+		d.forwardingMetrics[swIf.swIntfIndex] = newInterfaceMetrics(d.Metrics, swIf.swIntfIndex,
+			d.localIA, d.neighborIAs)
 	}
 
 	// Start our custom /proc/pid/stat collector to export iowait time and (in the future) other
