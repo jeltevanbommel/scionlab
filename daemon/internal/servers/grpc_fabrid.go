@@ -47,10 +47,10 @@ type tempHopInfo struct {
 
 // fetchFabridDetachedMaps uses findDetachedHops to find the detached hops in a path, for a given
 // list of paths. The detached map is then fetched with fetchMaps and the path in the list of paths
-// is updated.
-func (s *DaemonServer) fetchFabridDetachedMaps(ctx context.Context, paths []snet.Path) {
+// is updated. Parameter client may be nil.
+func (s *DaemonServer) fetchFabridDetachedMaps(ctx context.Context, paths []snet.Path,
+	client experimental.FABRIDIntraServiceClient) {
 	fetchedMaps := make(map[addr.IA]fabrid_utils.FabridMapEntry)
-	var client experimental.FABRIDIntraServiceClient
 	// Check for each path whether they have hops that have a detached map
 	for i := 0; i < len(paths); i++ {
 		pMeta := paths[i].Metadata()
@@ -72,6 +72,7 @@ func (s *DaemonServer) fetchFabridDetachedMaps(ctx context.Context, paths []snet
 			conn, err := s.Dialer.Dial(ctx, &snet.SVCAddr{SVC: addr.SvcCS})
 			if err != nil {
 				log.FromCtx(ctx).Debug("Dialing CS failed", "err", err)
+				continue
 			}
 			defer conn.Close()
 			client = experimental.NewFABRIDIntraServiceClient(conn)

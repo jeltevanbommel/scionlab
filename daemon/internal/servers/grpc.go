@@ -105,7 +105,7 @@ func (s *DaemonServer) paths(ctx context.Context,
 		return nil, err
 	}
 	if req.FetchFabridDetachedMaps {
-		s.fetchFabridDetachedMaps(ctx, paths)
+		s.fetchFabridDetachedMaps(ctx, paths, nil)
 	}
 	reply := &sdpb.PathsResponse{}
 	for _, p := range paths {
