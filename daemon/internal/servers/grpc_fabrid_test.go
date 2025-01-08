@@ -16,10 +16,6 @@ import (
 	"github.com/scionproto/scion/pkg/snet/path"
 )
 
-//TODO(jvanbommel): testcase with a couple of paths, for which a few have a detached hop and a few a
-// fabrid disabled hop. It should then call the mock dialer which returns a mock client.
-//We then check if the mock only fetches for detached hops and no other ones.
-
 type remoteMapsRequestMatcher struct {
 	expected *experimental.RemoteMapsRequest
 }
