@@ -4,7 +4,7 @@ FABRID
 .. _fabrid-design:
 
 - **Author**: Justin Rohrer, Jelte van Bommel, Marc Odermatt, Marc Wyss, Cyrill Krähenbühl, Juan A. García-Pardo
-- **Last updated**: 2024-11-12
+- **Last updated**: 2025-04-29
 - **Discussion at**: -
 
 Abstract
@@ -209,6 +209,108 @@ If no other HBH extension options are present, the HBH options of a FABRID-enabl
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                       Path Validator                          |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+FABRID control option
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block::
+
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+                                    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                                    |  OptType = 5  |  OptLen = ?   |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    | Type  |                  E2E MAC                              |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                           ...                                 |
+    |                        [Content]                              |
+    |                           ...                                 |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Type
+    The type of control option. The possible values are ValidationConfig(0), 
+    ValidationConfigAck(1), ValidationResponse(2),
+    StatisticsRequest(3) or StatisticsResponse(4)
+E2E MAC
+    The FABRID control option authenticator from bit [4:32].
+Content
+    The content is dependent on the Type, where StatisticsRequest has no content.
+    For detailed description of the Content see below.
+
+**ValidationConfig**
+
+.. code-block::
+
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |     Ratio     |
+    +-+-+-+-+-+-+-+-+
+
+Ratio
+    Ratio is used to describe the probability of triggering a Validation Response,
+    where the probability is roughly Ratio/256.
+
+**ValidationConfigAck**
+
+.. code-block::
+
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         Timestamp                             |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |     Ratio     |
+    +-+-+-+-+-+-+-+-+
+
+Ratio
+    Contains the confirmed ratio. The remote can return a smaller ratio than requested.
+
+**ValidationResponse**
+
+.. code-block::
+
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         Timestamp                             |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         Packet ID                             |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                    Path Validation Reply                      |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Timestamp
+    The Identifier Timestamp of the FABRID packet that triggered the validation action.
+Packet ID
+    The Identifier Packet ID of the FABRID packet that triggered the validation action.
+Path Validation Reply
+    Used to verify that ValidationResponse matches to ValidationRequest.
+
+**StatisticsResponse**
+
+.. code-block::
+
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         Timestamp                             |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         Packet ID                             |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                  Total Packets received                       |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                  Invalid Packets received                     |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Timestamp
+    The Identifier Timestamp of the FABRID packet that triggered the validation action.
+Packet ID
+    The Identifier Packet ID of the FABRID packet that triggered the validation action.
+Total Packets received
+    The total number of FABRID packets that the remote endhost received.
+Invalid Packets received
+    The number of invalid FABRID packets that the remote endhost received.
 
 .. _fabrid-formulas:
 
