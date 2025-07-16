@@ -55,6 +55,8 @@ import (
 	"github.com/scionproto/scion/private/drkey/drkeyutil"
 	"github.com/scionproto/scion/private/topology"
 	underlayconn "github.com/scionproto/scion/private/underlay/conn"
+	"github.com/scionproto/scion/private/underlay/raw"
+	"github.com/scionproto/scion/private/underlay/raw/protocols"
 	"github.com/scionproto/scion/router/bfd"
 	"github.com/scionproto/scion/router/control"
 )
@@ -63,8 +65,9 @@ const (
 	// TODO(karampok). Investigate whether that value should be higher.  In
 	// theory, PayloadLen in SCION header is 16 bits long, supporting a maximum
 	// payload size of 64KB. At the moment we are limited by Ethernet size
-	// usually ~1500B, but 9000B to support jumbo frames.
-	bufSize = 9000
+	// usually ~1500B, but 9000B to support jumbo frames. 128B are added to support headers for
+	// the raw underlay.
+	bufSize = 9128
 
 	// hopFieldDefaultExpTime is the default validity of the hop field
 	// and 63 is equivalent to 6h.
@@ -94,7 +97,7 @@ type BatchConn interface {
 // (after updating the path, if that is needed).
 type DataPlane struct {
 	interfaces               map[uint16]BatchConn
-	external                 map[uint16]BatchConn
+	external                 map[uint16]bool
 	linkTypes                map[uint16]topology.LinkType
 	neighborIAs              map[uint16]addr.IA
 	peerInterfaces           map[uint16]uint16
@@ -121,6 +124,13 @@ type DataPlane struct {
 	// The pool that stores all the packet buffers as described in the design document. See
 	// https://github.com/scionproto/scion/blob/master/doc/dev/design/BorderRouter.rst
 	packetPool chan []byte
+
+	// rawInterfaces stores the hardware interface indices of the interfaces that can be used for raw connection based
+	// packet transmission.
+	rawInterfaces     []int32
+	rawReceivers      map[HwReceiver]raw.Conn
+	rawForwarders     map[SwSender]SenderConn
+	internalUnderlays map[topology.InternalUnderlayIdentifier]SwSender
 }
 
 var (
@@ -256,7 +266,7 @@ func (d *DataPlane) AddExternalInterface(ifID uint16, conn BatchConn,
 		return serrors.WrapStr("adding external BFD", err, "if_id", ifID)
 	}
 	if d.external == nil {
-		d.external = make(map[uint16]BatchConn)
+		d.external = make(map[uint16]bool)
 	}
 	if d.interfaces == nil {
 		d.interfaces = make(map[uint16]BatchConn)
@@ -265,7 +275,7 @@ func (d *DataPlane) AddExternalInterface(ifID uint16, conn BatchConn,
 		return serrors.WithCtx(alreadySet, "ifID", ifID)
 	}
 	d.interfaces[ifID] = conn
-	d.external[ifID] = conn
+	d.external[ifID] = true
 	return nil
 }
 
@@ -362,7 +372,7 @@ func (d *DataPlane) getInterfaceState(interfaceID uint16) control.InterfaceState
 	return control.InterfaceUp
 }
 
-func (d *DataPlane) addBFDController(ifID uint16, s *bfdSend, cfg control.BFD,
+func (d *DataPlane) addBFDController(ifID uint16, s bfd.Sender, cfg control.BFD,
 	metrics bfd.Metrics) error {
 
 	if d.bfdSessions == nil {
@@ -513,8 +523,8 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 		len(d.interfaces)*cfg.BatchSize/cfg.NumProcessors,
 		cfg.BatchSize)
 
-	d.initPacketPool(cfg, processorQueueSize)
-	procQs, fwQs, slowQs := initQueues(cfg, d.interfaces, processorQueueSize)
+	d.initPacketPool(cfg, processorQueueSize, len(d.rawForwarders))
+	procQs, fwQs, slowQs, rawFwQs := initQueues(cfg, d.interfaces, processorQueueSize, d.rawForwarders)
 
 	for ifID, conn := range d.interfaces {
 		go func(ifID uint16, conn BatchConn) {
@@ -526,10 +536,27 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 			d.runForwarder(ifID, conn, cfg, fwQs[ifID])
 		}(ifID, conn)
 	}
+	for hwIf, conn := range d.rawReceivers {
+		go func(ifID int32, conn raw.Conn) {
+			defer log.HandlePanic()
+			d.runRawReceiver(ifID, conn, cfg, procQs)
+		}(int32(hwIf.hwIntfIndex), conn)
+	}
+	for swIf, sender := range d.rawForwarders {
+		go func(sender SwSender, conn raw.Conn, sendingFn raw.SerializeFn) {
+			defer log.HandlePanic()
+			if sender.external {
+				d.runRawForwarder(sender.swIntfIndex, conn, sendingFn, cfg, fwQs[sender.swIntfIndex])
+			} else {
+				d.runRawForwarder(sender.swIntfIndex, conn, sendingFn, cfg, rawFwQs[sender])
+			}
+		}(swIf, sender.Conn, sender.Serializer)
+	}
+
 	for i := 0; i < cfg.NumProcessors; i++ {
 		go func(i int) {
 			defer log.HandlePanic()
-			d.runProcessor(i, procQs[i], fwQs, slowQs[i%cfg.NumSlowPathProcessors])
+			d.runProcessor(i, procQs[i], fwQs, slowQs[i%cfg.NumSlowPathProcessors], rawFwQs)
 		}(i)
 	}
 	for i := 0; i < cfg.NumSlowPathProcessors; i++ {
@@ -555,10 +582,11 @@ func (d *DataPlane) Run(ctx context.Context, cfg *RunConfig) error {
 
 // initializePacketPool calculates the size of the packet pool based on the
 // current dataplane settings and allocates all the buffers
-func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int) {
-	poolSize := len(d.interfaces)*cfg.BatchSize +
+func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int, activeRawInterfaces int) {
+	poolSize := len(d.interfaces)*3*cfg.BatchSize +
 		(cfg.NumProcessors+cfg.NumSlowPathProcessors)*(processorQueueSize+1) +
-		len(d.interfaces)*(2*cfg.BatchSize)
+		activeRawInterfaces*cfg.BatchSize
+	// TODO(jvanbommel): why was the original 3?
 
 	log.Debug("Initialize packet pool of size", "poolSize", poolSize)
 	d.packetPool = make(chan []byte, poolSize)
@@ -569,8 +597,8 @@ func (d *DataPlane) initPacketPool(cfg *RunConfig, processorQueueSize int) {
 
 // initializes the processing routines and forwarders queues
 func initQueues(cfg *RunConfig, interfaces map[uint16]BatchConn,
-	processorQueueSize int) ([]chan packet, map[uint16]chan packet,
-	[]chan slowPacket) {
+	processorQueueSize int, rawSenders map[SwSender]SenderConn) ([]chan packet, map[uint16]chan packet,
+	[]chan slowPacket, map[SwSender]chan packet) {
 
 	procQs := make([]chan packet, cfg.NumProcessors)
 	for i := 0; i < cfg.NumProcessors; i++ {
@@ -584,7 +612,16 @@ func initQueues(cfg *RunConfig, interfaces map[uint16]BatchConn,
 	for ifID := range interfaces {
 		fwQs[ifID] = make(chan packet, cfg.BatchSize)
 	}
-	return procQs, fwQs, slowQs
+	rawFwQs := make(map[SwSender]chan packet)
+	for sender, _ := range rawSenders {
+		log.Debug("Creating queue for ", "sender", sender.protocol, "s", sender.swIntfIndex)
+		if sender.external {
+			fwQs[sender.swIntfIndex] = make(chan packet, cfg.BatchSize)
+		} else {
+			rawFwQs[sender] = make(chan packet, cfg.BatchSize)
+		}
+	}
+	return procQs, fwQs, slowQs, rawFwQs
 }
 
 type packet struct {
@@ -601,7 +638,20 @@ type packet struct {
 	trafficType trafficType
 	// The goods
 	rawPacket []byte
-	mplsLabel uint8
+
+	// validatedSource indicates whether the packet has been received on a hardware interface, rather
+	// than the traditional IP/UDP connections and thus does not need manual verification of the
+	// source sender.
+	validatedSource bool
+	// rawForwardingArgs stores the specific arguments that are used to forward the packet on a
+	// hardware interface. This contains protocol specific arguments, such as an MPLS label,
+	//as well as the destination MAC address.
+	rawForwardingArgs raw.ForwardingArgs
+	// fullPacket is a pointer to the full byte container in which rawPkt is contained. With the Raw
+	// underlay the rawPkt can be a slice in the fullPacket, as it needs to skip over added headers
+	// for processing. When the packet is returned to the packet pool, the full container should be
+	// used, as otherwise the memory would leak.
+	fullPacket []byte
 }
 
 type slowPacket struct {
@@ -644,9 +694,10 @@ func (d *DataPlane) runReceiver(ifID uint16, conn BatchConn, cfg *RunConfig,
 			return
 		}
 		outPkt := packet{
-			rawPacket: pkt.Buffers[0][:pkt.N],
-			ingress:   ifID,
-			srcAddr:   srcAddr,
+			rawPacket:  pkt.Buffers[0][:pkt.N],
+			fullPacket: pkt.Buffers[0][:pkt.N],
+			ingress:    ifID,
+			srcAddr:    srcAddr,
 		}
 		select {
 		case procQs[procID] <- outPkt:
@@ -708,8 +759,7 @@ func (d *DataPlane) returnPacketToPool(pkt []byte) {
 	d.packetPool <- pkt[:cap(pkt)]
 }
 
-func (d *DataPlane) runProcessor(id int, q <-chan packet,
-	fwQs map[uint16]chan packet, slowQ chan<- slowPacket) {
+func (d *DataPlane) runProcessor(id int, q <-chan packet, fwQs map[uint16]chan packet, slowQ chan<- slowPacket, rawFwQs map[SwSender]chan packet) {
 
 	log.Debug("Initialize processor with", "id", id)
 	processor := newPacketProcessor(d)
@@ -718,7 +768,7 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet,
 		if !ok {
 			continue
 		}
-		result, err := processor.processPkt(p.rawPacket, p.srcAddr, p.ingress)
+		result, err := processor.processPkt(p.rawPacket, p.srcAddr, p.ingress, p.validatedSource)
 
 		sc := classOfSize(len(p.rawPacket))
 		metrics := d.forwardingMetrics[p.ingress][sc]
@@ -732,34 +782,42 @@ func (d *DataPlane) runProcessor(id int, q <-chan packet,
 			case slowQ <- slowPacket{p, result.SlowPathRequest}:
 			default:
 				metrics.DroppedPacketsBusySlowPath.Inc()
-				d.returnPacketToPool(p.rawPacket)
+				d.returnPacketToPool(p.fullPacket)
 			}
 			continue
 		default:
 			log.Debug("Error processing packet", "err", err)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
 		if result.OutPkt == nil { // e.g. BFD case no message is forwarded
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
-		fwCh, ok := fwQs[egress]
+		var fwCh chan packet
+		if result.IntUnderlayIdentifier != nil {
+			fwCh, ok = rawFwQs[d.internalUnderlays[*result.IntUnderlayIdentifier]]
+		} else {
+			fwCh, ok = fwQs[egress]
+		}
+
 		if !ok {
 			log.Debug("Error determining forwarder. Egress is invalid", "egress", egress)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			continue
 		}
 		p.rawPacket = result.OutPkt
 		p.dstAddr = result.OutAddr
-		p.mplsLabel = uint8(processor.mplsLabel)
+
+		p.rawForwardingArgs = result.RawFwArgs
+
 		p.trafficType = result.TrafficType
 		select {
 		case fwCh <- p:
 		default:
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 			metrics.DroppedPacketsBusyForwarder.Inc()
 		}
 
@@ -782,7 +840,7 @@ func (d *DataPlane) runSlowPathProcessor(id int, q <-chan slowPacket,
 		if err != nil {
 			log.Debug("Error processing packet", "err", err)
 			metrics.DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 			continue
 		}
 		p.packet.dstAddr = res.OutAddr
@@ -791,13 +849,13 @@ func (d *DataPlane) runSlowPathProcessor(id int, q <-chan slowPacket,
 		fwCh, ok := fwQs[res.EgressID]
 		if !ok {
 			log.Debug("Error determining forwarder. Egress is invalid", "egress", res.EgressID)
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 			continue
 		}
 		select {
 		case fwCh <- p.packet:
 		default:
-			d.returnPacketToPool(p.packet.rawPacket)
+			d.returnPacketToPool(p.packet.fullPacket)
 		}
 	}
 }
@@ -857,11 +915,13 @@ func (p *slowPathPacketProcessor) reset() {
 // a packet. In most cases of error, all fields are left to their
 // zero value.
 type processResult struct {
-	EgressID        uint16
-	OutAddr         *net.UDPAddr
-	OutPkt          []byte
-	SlowPathRequest slowPathRequest
-	TrafficType     trafficType
+	EgressID              uint16
+	OutAddr               *net.UDPAddr
+	OutPkt                []byte
+	SlowPathRequest       slowPathRequest
+	TrafficType           trafficType
+	RawFwArgs             raw.ForwardingArgs
+	IntUnderlayIdentifier *topology.InternalUnderlayIdentifier
 }
 
 func (p *slowPathPacketProcessor) processPacket(pkt slowPacket) (processResult, error) {
@@ -983,14 +1043,14 @@ func (d *DataPlane) runForwarder(ifID uint16, conn BatchConn, cfg *RunConfig, c 
 		updateOutputMetrics(metrics, pkts[:written])
 
 		for _, p := range pkts[:written] {
-			d.returnPacketToPool(p.rawPacket)
+			d.returnPacketToPool(p.fullPacket)
 		}
 
 		if written != toWrite {
 			// Only one is dropped at this time. We'll retry the rest.
 			sc := classOfSize(len(pkts[written].rawPacket))
 			metrics[sc].DroppedPacketsInvalid.Inc()
-			d.returnPacketToPool(pkts[written].rawPacket)
+			d.returnPacketToPool(pkts[written].fullPacket)
 			toWrite -= (written + 1)
 			// Shift the leftovers to the head of the buffers.
 			for i := 0; i < toWrite; i++ {
@@ -1062,13 +1122,14 @@ func (p *scionPacketProcessor) reset() error {
 	p.e2eLayer = slayers.EndToEndExtnSkipper{}
 	p.identifier = nil
 	p.fabrid = nil
-	p.mplsLabel = 0
+	p.outUnderlay = nil
+	p.rawFwArgs = raw.ForwardingArgs{}
 	p.nextHop = nil
 	return nil
 }
 
 func (p *scionPacketProcessor) processPkt(rawPkt []byte,
-	srcAddr *net.UDPAddr, ingressID uint16) (processResult, error) {
+	srcAddr *net.UDPAddr, ingressID uint16, validatedSource bool) (processResult, error) {
 
 	if err := p.reset(); err != nil {
 		return processResult{}, err
@@ -1076,6 +1137,7 @@ func (p *scionPacketProcessor) processPkt(rawPkt []byte,
 	p.rawPkt = rawPkt
 	p.srcAddr = srcAddr
 	p.ingressID = ingressID
+	p.skipSourceCheck = validatedSource
 
 	// parse SCION header and skip extensions;
 	var err error
@@ -1263,10 +1325,15 @@ type scionPacketProcessor struct {
 	identifier        *extension.IdentifierOption
 	fabrid            *extension.FabridOption
 	fabridInputBuffer []byte
-	mplsLabel         uint32
+
+	rawFwArgs   raw.ForwardingArgs
+	rawProtocol protocols.ProtocolType
+	rawIntfIdx  uint16
 	// IP of the next hop. Only valid for the inbound or AS transit cases
-	nextHop     *net.UDPAddr
-	transitType transitType
+	nextHop         *net.UDPAddr
+	transitType     transitType
+	skipSourceCheck bool
+	outUnderlay     *topology.InternalUnderlayIdentifier
 }
 
 const (
@@ -1467,6 +1534,9 @@ func (p *scionPacketProcessor) invalidDstIA() (processResult, error) {
 // this check prevents malicious end hosts in the local AS from bypassing the
 // SrcIA checks by disguising packets as transit traffic.
 func (p *scionPacketProcessor) validateTransitUnderlaySrc() (processResult, error) {
+	if p.skipSourceCheck {
+		return processResult{}, nil
+	}
 	if p.path.IsFirstHop() || p.ingressID != 0 {
 		// not a transit packet, nothing to check
 		return processResult{}, nil
@@ -1868,7 +1938,8 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err := p.processHbhOptions(0); err != nil {
 			return processResult{}, err
 		}
-		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttIn}, nil
+		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttIn,
+			RawFwArgs: p.rawFwArgs, IntUnderlayIdentifier: p.outUnderlay}, nil
 	}
 
 	// Outbound: pkt leaving the local IA. This Could be:
@@ -1926,6 +1997,8 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 			// Therefore it is BRTransit
 			tt = ttBrTransit
 		}
+		// If the egress if is on the same host,  we will not apply any requested alternative
+		// underlay, as it is simply not possible.
 		return processResult{EgressID: egressID, OutPkt: p.rawPkt, TrafficType: tt}, nil
 	}
 	// ASTransit in: pkt leaving this AS through another BR.
@@ -1935,7 +2008,8 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err := p.processHbhOptions(egressID); err != nil {
 			return processResult{}, err
 		}
-		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttInTransit}, nil
+		return processResult{OutAddr: a, OutPkt: p.rawPkt, TrafficType: ttInTransit, RawFwArgs: p.
+			rawFwArgs, IntUnderlayIdentifier: p.outUnderlay}, nil
 	}
 	errCode := slayers.SCMPCodeUnknownHopFieldEgress
 	if !p.infoField.ConsDir {
@@ -2635,6 +2709,12 @@ func (d *DataPlane) initMetrics() {
 			continue
 		}
 		d.forwardingMetrics[id] = newInterfaceMetrics(d.Metrics, id, d.localIA, d.neighborIAs)
+
+	}
+	//TODO(jvanbommel): should be software interfaces, check if we should skip external ones.
+	for swIf, _ := range d.rawForwarders {
+		d.forwardingMetrics[swIf.swIntfIndex] = newInterfaceMetrics(d.Metrics, swIf.swIntfIndex,
+			d.localIA, d.neighborIAs)
 	}
 
 	// Start our custom /proc/pid/stat collector to export iowait time and (in the future) other

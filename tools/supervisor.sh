@@ -1,5 +1,6 @@
 #!/bin/bash
 
+source "/home/jelte/py/bin/activate"
 mkdir -p logs
 
 # Wrap the 'supervisorctl' command

@@ -1,0 +1,17 @@
+load("//tools/lint:go.bzl", "go_library")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "conn.go",
+        "msg_hdr.go",
+        "protocol.go",
+    ],
+    importpath = "github.com/scionproto/scion/private/underlay/raw",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/log:go_default_library",
+        "//pkg/private/serrors:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
+    ],
+)

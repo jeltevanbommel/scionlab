@@ -24,7 +24,7 @@ import (
 	jsontopo "github.com/scionproto/scion/private/topology/json"
 )
 
-func rawBRIntfLocalAddr(u *jsontopo.Underlay) (netip.AddrPort, error) {
+func rawBRIntfLocalAddr(u *jsontopo.ExternalUnderlay) (netip.AddrPort, error) {
 	if (u.DeprecatedPublic != "" || u.DeprecatedBind != "") && u.Local != "" {
 		return netip.AddrPort{},
 			serrors.New(`deprecated "public" and "bind" fields cannot be combined with "local"`,
